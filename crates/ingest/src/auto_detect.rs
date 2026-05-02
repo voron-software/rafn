@@ -1,0 +1,38 @@
+use crate::parser::BenchmarkParser;
+use crate::parsers::benchmarkdotnet::BenchmarkDotNetParser;
+use crate::parsers::criterion::CriterionParser;
+use crate::parsers::google_benchmark::GoogleBenchmarkParser;
+use crate::parsers::jmh::JmhParser;
+use crate::{Error, Result};
+use uuid::Uuid;
+
+pub fn detect_format(json: &str) -> Result<String> {
+    // Try BenchmarkDotNet first (most specific format)
+    let bdn_parser =
+        BenchmarkDotNetParser::new(Uuid::nil(), "dummy".to_string(), "dummy".to_string());
+    if bdn_parser.can_parse(json) {
+        return Ok("benchmarkdotnet".to_string());
+    }
+
+    // Try Google Benchmark (distinctive context + benchmarks object structure)
+    let gbench_parser =
+        GoogleBenchmarkParser::new(Uuid::nil(), "dummy".to_string(), "dummy".to_string());
+    if gbench_parser.can_parse(json) {
+        return Ok("google_benchmark".to_string());
+    }
+
+    // Try JMH
+    let jmh_parser = JmhParser::new(Uuid::nil(), "dummy".to_string(), "dummy".to_string());
+    if jmh_parser.can_parse(json) {
+        return Ok("jmh".to_string());
+    }
+
+    // Try Criterion (least specific)
+    let criterion_parser =
+        CriterionParser::new(Uuid::nil(), "dummy".to_string(), "dummy".to_string());
+    if criterion_parser.can_parse(json) {
+        return Ok("criterion".to_string());
+    }
+
+    Err(Error::UnknownFormat)
+}

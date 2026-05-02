@@ -1,0 +1,3 @@
+version: v2
+deps:
+  - buf.build/voron-software/rafn

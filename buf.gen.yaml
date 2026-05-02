@@ -1,0 +1,10 @@
+version: v2
+inputs:
+  - module: buf.build/voron-software/rafn
+plugins:
+  - remote: buf.build/community/neoeinstein-prost:v0.4.0
+    out: crates/proto/src/gen
+  - remote: buf.build/community/neoeinstein-tonic:v0.4.1
+    out: crates/proto/src/gen
+    opt:
+      - no_server
