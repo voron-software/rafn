@@ -27,7 +27,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - uses: bufbuild/buf-action@v1
+      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1
         with:
           lint: false
           format: true
@@ -47,7 +47,7 @@ jobs:
           components: clippy
 
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -97,7 +97,7 @@ jobs:
           toolchain: stable
 
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
 
       - name: Run benchmarks
         run: cargo bench --workspace --no-fail-fast
