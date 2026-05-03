@@ -61,7 +61,7 @@ fn deserialize_f64_map_or_nan<'de, D: serde::Deserializer<'de>>(
                     serde_json::Value::String(s)
                         if matches!(s.as_str(), "NaN" | "Infinity" | "-Infinity") =>
                     {
-                        continue
+                        continue;
                     }
                     _ => continue,
                 };

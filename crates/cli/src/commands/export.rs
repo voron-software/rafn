@@ -123,7 +123,10 @@ impl ExportCommand {
                 writeln!(writer, "{}", json)?;
             }
             OutputFormat::Csv => {
-                writeln!(writer, "benchmark_name,mean_ns,median_ns,stddev_ns,min_ns,max_ns,iterations,ops_per_sec")?;
+                writeln!(
+                    writer,
+                    "benchmark_name,mean_ns,median_ns,stddev_ns,min_ns,max_ns,iterations,ops_per_sec"
+                )?;
                 for bench in benchmarks {
                     writeln!(
                         writer,

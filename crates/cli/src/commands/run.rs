@@ -3,17 +3,13 @@ use clap::Args;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::{api, discovery, framework, git, runner};
 use crate::config_file::Config;
+use crate::{api, discovery, framework, git, runner};
 
 #[derive(Args)]
 pub struct RunCommand {
     /// gRPC server URL for submitting results
-    #[arg(
-        long,
-        env = "RAFN_GRPC_URL",
-        default_value = "http://localhost:50051"
-    )]
+    #[arg(long, env = "RAFN_GRPC_URL", default_value = "http://localhost:50051")]
     grpc_url: String,
 
     /// Repository name (auto-detected from git if not specified)
@@ -120,13 +116,10 @@ impl RunCommand {
 
                 // Parse the discovered JSON through the ingest crate
                 let json = serde_json::to_string(&bench.data)?;
-                let format = ingest::detect_format(&json).unwrap_or_else(|_| "criterion".to_string());
-                let parser = ingest::get_parser(
-                    &format,
-                    Uuid::nil(),
-                    repository.clone(),
-                    commit.clone(),
-                );
+                let format =
+                    ingest::detect_format(&json).unwrap_or_else(|_| "criterion".to_string());
+                let parser =
+                    ingest::get_parser(&format, Uuid::nil(), repository.clone(), commit.clone());
 
                 match parser {
                     Ok(p) => match p.parse(&json) {

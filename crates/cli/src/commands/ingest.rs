@@ -107,7 +107,8 @@ async fn process_file(
     let content = fs::read_to_string(file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
-    let format = ingest::detect_format(&content).context("Could not auto-detect benchmark format")?;
+    let format =
+        ingest::detect_format(&content).context("Could not auto-detect benchmark format")?;
 
     let parser = ingest::get_parser(
         &format,

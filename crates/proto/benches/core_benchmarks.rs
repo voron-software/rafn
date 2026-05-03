@@ -1,6 +1,6 @@
 #![allow(unused_crate_dependencies)]
 use chrono::Utc;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use proto::{Benchmark, Metrics};
 use std::hint::black_box;
 use uuid::Uuid;

@@ -1,7 +1,7 @@
 #![allow(unused_crate_dependencies)]
-use criterion::{criterion_group, criterion_main, Criterion};
-use ingest::parsers::criterion::CriterionParser;
+use criterion::{Criterion, criterion_group, criterion_main};
 use ingest::BenchmarkParser;
+use ingest::parsers::criterion::CriterionParser;
 use std::hint::black_box;
 
 fn criterion_parser_benchmark(c: &mut Criterion) {

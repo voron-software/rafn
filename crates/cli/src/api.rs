@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
-use proto::pb::{
-    ingest_service_client::IngestServiceClient, Benchmark, IngestRequest,
-};
+use proto::pb::{Benchmark, IngestRequest, ingest_service_client::IngestServiceClient};
 use tonic::transport::Channel;
 
 pub struct IngestClient {
