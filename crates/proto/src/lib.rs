@@ -1,6 +1,6 @@
 pub mod pb {
     #![allow(clippy::empty_docs)]
-    include!("gen/perfscope.v1.rs");
+    include!("gen/rafn.v1.rs");
 }
 
 pub mod benchmark;

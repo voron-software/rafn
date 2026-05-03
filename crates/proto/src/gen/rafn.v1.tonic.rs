@@ -102,11 +102,11 @@ pub mod ingest_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/perfscope.v1.IngestService/Ingest",
+                "/rafn.v1.IngestService/Ingest",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("perfscope.v1.IngestService", "Ingest"));
+                .insert(GrpcMethod::new("rafn.v1.IngestService", "Ingest"));
             self.inner.unary(req, path, codec).await
         }
     }

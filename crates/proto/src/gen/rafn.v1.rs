@@ -151,5 +151,5 @@ pub struct IngestResponse {
     #[prost(string, tag="2")]
     pub message: ::prost::alloc::string::String,
 }
-include!("perfscope.v1.tonic.rs");
+include!("rafn.v1.tonic.rs");
 // @@protoc_insertion_point(module)
