@@ -27,12 +27,6 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1.4.0
-        with:
-          lint: false
-          format: true
-          push: false
-
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -45,14 +39,6 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-
-      - name: Install buf
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
-
-      - name: Install protoc
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.75.22
-        with:
-          tool: protoc
 
       - name: Cache cargo registry
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -100,14 +86,6 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
-
-      - name: Install buf
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
-
-      - name: Install protoc
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.75.22
-        with:
-          tool: protoc
 
       - name: Run benchmarks
         run: cargo bench --workspace --no-fail-fast

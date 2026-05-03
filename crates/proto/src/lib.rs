@@ -1,5 +1,6 @@
 pub mod pb {
-    tonic::include_proto!("perfscope.v1");
+    #![allow(clippy::empty_docs)]
+    include!("gen/perfscope.v1.rs");
 }
 
 pub mod benchmark;

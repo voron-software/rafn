@@ -14,9 +14,6 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 
-[build-dependencies]
-tonic-build = { workspace = true }
-
 [dev-dependencies]
 criterion = { workspace = true }
 
