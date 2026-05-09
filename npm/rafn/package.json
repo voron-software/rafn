@@ -1,5 +1,5 @@
 {
-  "name": "rafn",
+  "name": "@voron-software/rafn",
   "version": "0.1.0",
   "description": "A lightweight benchmark uploader for perfscope",
   "bin": {

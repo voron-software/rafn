@@ -124,9 +124,7 @@ async fn process_file(
         anyhow::bail!("No benchmarks found in file");
     }
 
-    if !dry_run
-        && let Some(c) = client
-    {
+    if !dry_run && let Some(c) = client {
         c.submit(benchmarks).await?;
     }
 
