@@ -114,11 +114,12 @@ jobs:
           cp LICENSE npm/rafn/LICENSE
 
       - name: Publish
+        working-directory: npm/rafn
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version --prefix npm/rafn
-          npm publish npm/rafn --access public
+          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
+          npm publish --access public
 
   build-wheels:
     name: Build Python wheels (${{ matrix.os }} ${{ matrix.target }})
@@ -183,3 +184,5 @@ jobs:
       #   Environment name: (leave blank)
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          skip-existing: true
