@@ -1,0 +1,13 @@
+{
+  "name": "@rafn/cli-linux-x64",
+  "version": "0.1.0",
+  "description": "Linux x64 binary for rafn",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["rafn"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rafn-rs/rafn"
+  }
+}

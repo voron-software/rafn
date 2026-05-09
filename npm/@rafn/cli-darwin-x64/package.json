@@ -1,0 +1,13 @@
+{
+  "name": "@rafn/cli-darwin-x64",
+  "version": "0.1.0",
+  "description": "macOS x64 binary for rafn",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["rafn"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rafn-rs/rafn"
+  }
+}

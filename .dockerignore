@@ -1,0 +1,12 @@
+# Rust build output
+/target
+/dist
+
+# Git and CI
+.git
+.github
+
+# npm packaging artifacts (binaries are injected by CI, not committed)
+node_modules
+npm/@rafn/cli-*/rafn
+npm/@rafn/cli-*/rafn.exe

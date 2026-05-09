@@ -1,1 +1,5 @@
 /target
+/dist
+npm/@rafn/cli-*/rafn
+npm/@rafn/cli-*/rafn.exe
+node_modules/
