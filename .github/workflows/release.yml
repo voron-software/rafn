@@ -119,7 +119,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
-            npm version "$RELEASE_VERSION" --no-git-tag-version \
+            npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version \
               --prefix "npm/@rafn/cli-${platform}"
             npm publish "npm/@rafn/cli-${platform}" --access public
           done
@@ -128,7 +128,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm version "$RELEASE_VERSION" --no-git-tag-version --prefix npm/rafn
+          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version --prefix npm/rafn
           npm publish npm/rafn --access public
 
   build-wheels:
@@ -143,7 +143,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64
           - os: macos-latest
             target: x86_64
