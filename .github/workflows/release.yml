@@ -143,8 +143,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24'
 
       - name: Download binaries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -166,8 +165,17 @@ jobs:
           cp LICENSE npm/rafn/
           sed -i 's/"version": ".*"/"version": "'"$RELEASE_VERSION"'"/' npm/rafn/package.json
 
+      - name: Skip if already published
+        id: npm-check
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.npmjs.org/%40voron-software%2frafn/${RELEASE_VERSION}")
+          if [ "$code" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.npm-check.outputs.skip != 'true' }}
         working-directory: npm/rafn
         run: npm publish --provenance --access public
 
@@ -200,16 +208,20 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
+      - name: Skip if already published
+        id: crates-check
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://crates.io/api/v1/crates/rafn/${RELEASE_VERSION}")
+          if [ "$code" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.crates-check.outputs.skip != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          if curl -sf "https://crates.io/api/v1/crates/rafn/$RELEASE_VERSION" | python3 -c "import sys,json; json.load(sys.stdin)['version']" 2>/dev/null; then
-            echo "rafn@$RELEASE_VERSION already on crates.io, skipping"
-            exit 0
-          fi
-          cargo publish --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
+        run: cargo publish --allow-dirty
 
   github-release:
     name: Create GitHub Release
