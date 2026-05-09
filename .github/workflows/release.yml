@@ -32,7 +32,7 @@ jobs:
             npm-platform: linux-arm64
             artifact: rafn
           - name: macOS x64
-            os: macos-13
+            os: macos-latest
             target: x86_64-apple-darwin
             npm-platform: darwin-x64
             artifact: rafn
@@ -145,7 +145,7 @@ jobs:
             target: x86_64
           - os: ubuntu-latest
             target: aarch64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64
           - os: macos-latest
             target: aarch64
@@ -188,7 +188,7 @@ jobs:
           path: dist
 
       # Requires a PyPI Trusted Publisher configured at pypi.org:
-      #   Repository owner: rafn-rs
+      #   Repository owner: voron-software
       #   Repository name:  rafn
       #   Workflow filename: release.yml
       #   Environment name: (leave blank)

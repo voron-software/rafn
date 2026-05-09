@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "A lightweight benchmark uploader for perfscope"
-repository = "https://github.com/rafn-rs/rafn"
+repository = "https://github.com/voron-software/rafn"
 
 [workspace.dependencies]
 # Async runtime

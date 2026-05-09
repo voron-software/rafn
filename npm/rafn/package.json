@@ -19,7 +19,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rafn-rs/rafn"
+    "url": "https://github.com/voron-software/rafn"
   },
   "keywords": ["benchmarking", "performance", "cli", "perfscope"],
   "engines": {
