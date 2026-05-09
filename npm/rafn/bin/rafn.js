@@ -4,29 +4,22 @@
 const { spawnSync } = require("child_process");
 const path = require("path");
 
-const PLATFORM_PACKAGES = {
-  "linux-x64": "@rafn/cli-linux-x64",
-  "linux-arm64": "@rafn/cli-linux-arm64",
-  "darwin-x64": "@rafn/cli-darwin-x64",
-  "darwin-arm64": "@rafn/cli-darwin-arm64",
-  "win32-x64": "@rafn/cli-win32-x64",
+const BINARIES = {
+  "linux-x64":   "rafn-linux-x64",
+  "linux-arm64": "rafn-linux-arm64",
+  "darwin-x64":  "rafn-darwin-x64",
+  "darwin-arm64": "rafn-darwin-arm64",
+  "win32-x64":   "rafn-win32-x64.exe",
 };
 
 function getBinaryPath() {
   const key = `${process.platform}-${process.arch}`;
-  const pkg = PLATFORM_PACKAGES[key];
-  if (!pkg) {
-    const supported = Object.keys(PLATFORM_PACKAGES).join(", ");
+  const name = BINARIES[key];
+  if (!name) {
+    const supported = Object.keys(BINARIES).join(", ");
     throw new Error(`rafn: unsupported platform "${key}". Supported: ${supported}`);
   }
-  let pkgDir;
-  try {
-    pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
-  } catch {
-    throw new Error(`rafn: cannot find package ${pkg}. Run \`npm install\` to reinstall.`);
-  }
-  const ext = process.platform === "win32" ? ".exe" : "";
-  return path.join(pkgDir, `rafn${ext}`);
+  return path.join(__dirname, name);
 }
 
 let binaryPath;

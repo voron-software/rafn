@@ -6,16 +6,6 @@
     "rafn": "bin/rafn.js"
   },
   "files": ["bin/"],
-  "scripts": {
-    "postinstall": "node bin/rafn.js --version > /dev/null 2>&1 || true"
-  },
-  "optionalDependencies": {
-    "@rafn/cli-linux-x64": "0.1.0",
-    "@rafn/cli-linux-arm64": "0.1.0",
-    "@rafn/cli-darwin-x64": "0.1.0",
-    "@rafn/cli-darwin-arm64": "0.1.0",
-    "@rafn/cli-win32-x64": "0.1.0"
-  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

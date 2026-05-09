@@ -103,28 +103,17 @@ jobs:
       - name: Extract version from tag
         run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - name: Stage binaries into platform packages
+      - name: Stage binaries into package
         run: |
+          mkdir -p npm/rafn/bin
           for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
-            cp "artifacts/rafn-${platform}/rafn" "npm/@rafn/cli-${platform}/rafn"
-            chmod +x "npm/@rafn/cli-${platform}/rafn"
-            cp LICENSE "npm/@rafn/cli-${platform}/LICENSE"
+            cp "artifacts/rafn-${platform}/rafn" "npm/rafn/bin/rafn-${platform}"
+            chmod +x "npm/rafn/bin/rafn-${platform}"
           done
-          cp "artifacts/rafn-win32-x64/rafn.exe" "npm/@rafn/cli-win32-x64/rafn.exe"
-          cp LICENSE npm/@rafn/cli-win32-x64/LICENSE
+          cp "artifacts/rafn-win32-x64/rafn.exe" "npm/rafn/bin/rafn-win32-x64.exe"
           cp LICENSE npm/rafn/LICENSE
 
-      - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
-            npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version \
-              --prefix "npm/@rafn/cli-${platform}"
-            npm publish "npm/@rafn/cli-${platform}" --access public
-          done
-
-      - name: Publish main package
+      - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
