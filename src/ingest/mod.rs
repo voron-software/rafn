@@ -1,19 +1,17 @@
-#![allow(unused_crate_dependencies)]
-
 pub mod auto_detect;
 pub mod error;
 pub mod parser;
 pub mod parsers;
 pub mod validation;
 
-pub use auto_detect::detect_format;
-pub use error::{Error, Result};
-pub use parser::BenchmarkParser;
+pub use self::auto_detect::detect_format;
+pub use self::error::{Error, Result};
+pub use self::parser::BenchmarkParser;
 
-use crate::parsers::benchmarkdotnet::BenchmarkDotNetParser;
-use crate::parsers::criterion::CriterionParser;
-use crate::parsers::google_benchmark::GoogleBenchmarkParser;
-use crate::parsers::jmh::JmhParser;
+use self::parsers::benchmarkdotnet::BenchmarkDotNetParser;
+use self::parsers::criterion::CriterionParser;
+use self::parsers::google_benchmark::GoogleBenchmarkParser;
+use self::parsers::jmh::JmhParser;
 use uuid::Uuid;
 
 pub fn get_parser(

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::pb;
-use crate::{Error, Metrics, Result};
+use super::pb;
+use super::{Error, Metrics, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Benchmark {

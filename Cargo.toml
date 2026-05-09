@@ -1,19 +1,20 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/proto",
-    "crates/ingest",
-    "crates/cli",
-]
-
-[workspace.package]
+[package]
+name = "rafn"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "A lightweight benchmark uploader for perfscope"
 repository = "https://github.com/voron-software/rafn"
 
-[workspace.dependencies]
+[lib]
+name = "rafn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rafn"
+path = "src/main.rs"
+
+[dependencies]
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
 
@@ -25,7 +26,6 @@ toml = "1.0"
 # gRPC
 tonic = { version = "0.12" }
 prost = { version = "0.13" }
-tonic-build = { version = "0.12" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -47,12 +47,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.20", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
-# Testing
+# URL encoding
+urlencoding = "2.1"
+
+[dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 
-# Internal crates
-proto = { path = "crates/proto" }
-ingest = { path = "crates/ingest" }
+[[bench]]
+name = "core_benchmarks"
+harness = false
+
+[[bench]]
+name = "parser_benchmarks"
+harness = false
 
 [profile.release]
 opt-level = 3

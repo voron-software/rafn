@@ -1,5 +1,5 @@
-use crate::error::Result;
-use proto::Benchmark;
+use super::error::Result;
+use crate::proto::Benchmark;
 
 pub trait BenchmarkParser: Send + Sync {
     fn parse(&self, json: &str) -> Result<Vec<Benchmark>>;

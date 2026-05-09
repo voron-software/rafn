@@ -1,9 +1,9 @@
-use crate::parser::BenchmarkParser;
-use crate::parsers::benchmarkdotnet::BenchmarkDotNetParser;
-use crate::parsers::criterion::CriterionParser;
-use crate::parsers::google_benchmark::GoogleBenchmarkParser;
-use crate::parsers::jmh::JmhParser;
-use crate::{Error, Result};
+use super::parser::BenchmarkParser;
+use super::parsers::benchmarkdotnet::BenchmarkDotNetParser;
+use super::parsers::criterion::CriterionParser;
+use super::parsers::google_benchmark::GoogleBenchmarkParser;
+use super::parsers::jmh::JmhParser;
+use super::{Error, Result};
 use uuid::Uuid;
 
 pub fn detect_format(json: &str) -> Result<String> {

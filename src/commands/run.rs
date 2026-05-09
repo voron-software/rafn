@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config_file::Config;
+use crate::ingest;
 use crate::{api, discovery, framework, git, runner};
 
 #[derive(Args)]
@@ -114,7 +115,6 @@ impl RunCommand {
                     print!("Submitting {}... ", bench.name);
                 }
 
-                // Parse the discovered JSON through the ingest crate
                 let json = serde_json::to_string(&bench.data)?;
                 let format =
                     ingest::detect_format(&json).unwrap_or_else(|_| "criterion".to_string());

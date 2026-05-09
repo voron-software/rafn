@@ -1,19 +1,14 @@
-//! Benchmark results discovery.
-
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
 
 use crate::framework::ResultsStrategy;
 
-/// A discovered benchmark result.
-#[derive(Debug)]
 pub struct BenchmarkResult {
     pub name: String,
     pub data: Value,
 }
 
-/// Discover benchmark results based on the framework's results strategy.
 pub fn discover_results(
     strategy: &ResultsStrategy,
     results_dir_override: Option<&Path>,
@@ -83,7 +78,6 @@ fn scan_criterion_directory(dir: &Path) -> Result<Vec<BenchmarkResult>> {
                 0
             };
 
-            // Format data as expected by CriterionParser
             let data = serde_json::json!({
                 "id": full_id,
                 "mean": estimates["mean"],

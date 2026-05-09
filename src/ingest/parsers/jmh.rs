@@ -1,6 +1,6 @@
-use crate::error::Result;
-use crate::parser::BenchmarkParser;
-use proto::{Benchmark, Metrics};
+use crate::ingest::error::Result;
+use crate::ingest::parser::BenchmarkParser;
+use crate::proto::{Benchmark, Metrics};
 use serde::Deserialize;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -115,7 +115,7 @@ impl JmhParser {
 impl BenchmarkParser for JmhParser {
     fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
         let jmh_benchmarks: Vec<JmhBenchmark> =
-            serde_json::from_str(json).map_err(proto::Error::Serialization)?;
+            serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
         let mut benchmarks = Vec::new();
 

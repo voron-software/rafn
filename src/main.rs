@@ -1,15 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
-mod api;
-mod commands;
-mod config_file;
-mod discovery;
-mod framework;
-mod git;
-mod runner;
-
-use commands::{
+use rafn::commands::{
     compare::CompareCommand, config::ConfigCommand, export::ExportCommand, ingest::IngestCommand,
     query::QueryCommand, run::RunCommand, trend::TrendCommand,
 };

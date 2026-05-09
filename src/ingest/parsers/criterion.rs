@@ -1,6 +1,6 @@
-use crate::error::Result;
-use crate::parser::BenchmarkParser;
-use proto::{Benchmark, Metrics};
+use crate::ingest::error::Result;
+use crate::ingest::parser::BenchmarkParser;
+use crate::proto::{Benchmark, Metrics};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -55,7 +55,7 @@ impl CriterionParser {
 impl BenchmarkParser for CriterionParser {
     fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
         let criterion_bench: CriterionBenchmark =
-            serde_json::from_str(json).map_err(proto::Error::Serialization)?;
+            serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
         let mean_ns = criterion_bench.mean.point_estimate;
         let median_ns = criterion_bench.median.point_estimate;

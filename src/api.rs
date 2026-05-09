@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use proto::pb::{Benchmark, IngestRequest, ingest_service_client::IngestServiceClient};
+use crate::proto::pb::{Benchmark, IngestRequest, ingest_service_client::IngestServiceClient};
 use tonic::transport::Channel;
 
 pub struct IngestClient {
@@ -14,7 +14,7 @@ impl IngestClient {
         Ok(Self { inner })
     }
 
-    pub async fn submit(&mut self, records: Vec<proto::Benchmark>) -> Result<u32> {
+    pub async fn submit(&mut self, records: Vec<crate::proto::Benchmark>) -> Result<u32> {
         let pb_records: Vec<Benchmark> = records.into_iter().map(Benchmark::from).collect();
         let response = self
             .inner

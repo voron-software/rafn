@@ -1,11 +1,9 @@
-#![allow(unused_crate_dependencies)]
 use criterion::{Criterion, criterion_group, criterion_main};
-use ingest::BenchmarkParser;
-use ingest::parsers::criterion::CriterionParser;
+use rafn::ingest::BenchmarkParser;
+use rafn::ingest::parsers::criterion::CriterionParser;
 use std::hint::black_box;
 
 fn criterion_parser_benchmark(c: &mut Criterion) {
-    // Sample Criterion JSON output for testing
     let sample_json = r#"{
         "reason": "benchmark-complete",
         "id": "sample_benchmark",
