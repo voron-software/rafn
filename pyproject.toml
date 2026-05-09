@@ -17,8 +17,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/rafn-rs/rafn"
+Repository = "https://github.com/voron-software/rafn"
 
 [tool.maturin]
 bindings = "bin"
-manifest-path = "crates/cli/Cargo.toml"

@@ -4,14 +4,24 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip publishing steps (build and package only)'
+        type: boolean
+        default: false
 
 permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-binaries:
+  build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     permissions:
@@ -22,65 +32,107 @@ jobs:
       matrix:
         include:
           - name: Linux x64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            npm-platform: linux-x64
-            artifact: rafn
+            os: ubuntu-24.04
+            rust-target: x86_64-unknown-linux-gnu
+            maturin-target: x86_64
+            platform: linux-x64
+            binary: rafn
+            manylinux: auto
           - name: Linux arm64
-            os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            npm-platform: linux-arm64
-            artifact: rafn
+            os: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+            maturin-target: aarch64
+            platform: linux-arm64
+            binary: rafn
+            manylinux: auto
           - name: macOS x64
             os: macos-latest
-            target: x86_64-apple-darwin
-            npm-platform: darwin-x64
-            artifact: rafn
+            rust-target: x86_64-apple-darwin
+            maturin-target: x86_64
+            platform: darwin-x64
+            binary: rafn
+            manylinux: 'off'
           - name: macOS arm64
             os: macos-latest
-            target: aarch64-apple-darwin
-            npm-platform: darwin-arm64
-            artifact: rafn
+            rust-target: aarch64-apple-darwin
+            maturin-target: aarch64
+            platform: darwin-arm64
+            binary: rafn
+            manylinux: 'off'
           - name: Windows x64
             os: windows-latest
-            target: x86_64-pc-windows-msvc
-            npm-platform: win32-x64
-            artifact: rafn.exe
+            rust-target: x86_64-pc-windows-msvc
+            maturin-target: x64
+            platform: win32-x64
+            binary: rafn.exe
+            manylinux: 'off'
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      - name: Set version from tag
+        shell: bash
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - name: Install aarch64 cross-compiler
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Bump version in Cargo.toml
+        shell: bash
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sed -i.bak 's/^version = ".*"/version = "'"$RELEASE_VERSION"'"/' Cargo.toml
+          rm -f Cargo.toml.bak
 
-      - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target ${{ matrix.target }} --package cli
+      - name: Build wheel and binary
+        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        with:
+          target: ${{ matrix.maturin-target }}
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: dist/*.whl
+          if-no-files-found: error
 
       - name: Upload binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: rafn-${{ matrix.npm-platform }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          name: binary-${{ matrix.platform }}
+          path: target/${{ matrix.rust-target }}/release/${{ matrix.binary }}
           if-no-files-found: error
 
-  publish-npm:
-    name: Publish npm packages
-    needs: build-binaries
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          attestations: true
+          skip-existing: true
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
       contents: read
     timeout-minutes: 15
 
@@ -97,92 +149,119 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: rafn-*
+          pattern: binary-*
           path: artifacts
 
-      - name: Extract version from tag
+      - name: Set version from tag
         run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - name: Stage binaries into package
+      - name: Stage package
         run: |
           mkdir -p npm/rafn/bin
           for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
-            cp "artifacts/rafn-${platform}/rafn" "npm/rafn/bin/rafn-${platform}"
+            cp "artifacts/binary-${platform}/rafn" "npm/rafn/bin/rafn-${platform}"
             chmod +x "npm/rafn/bin/rafn-${platform}"
           done
-          cp "artifacts/rafn-win32-x64/rafn.exe" "npm/rafn/bin/rafn-win32-x64.exe"
-          cp LICENSE npm/rafn/LICENSE
+          cp artifacts/binary-win32-x64/rafn.exe npm/rafn/bin/rafn-win32-x64.exe
+          cp LICENSE npm/rafn/
+          sed -i 's/"version": ".*"/"version": "'"$RELEASE_VERSION"'"/' npm/rafn/package.json
 
       - name: Publish
+        if: ${{ !inputs.dry_run }}
         working-directory: npm/rafn
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
-          npm publish --access public
+        run: npm publish --provenance --access public
 
-  build-wheels:
-    name: Build Python wheels (${{ matrix.os }} ${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+  publish-crates:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64
-          - os: ubuntu-24.04-arm
-            target: aarch64
-          - os: macos-latest
-            target: x86_64
-          - os: macos-latest
-            target: aarch64
-          - os: windows-latest
-            target: x86_64
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
-      - name: Build wheels
-        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist
-          manylinux: auto
+      - name: Set version from tag
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - name: Upload wheels
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
-          path: dist/*.whl
-          if-no-files-found: error
+      - name: Bump version in Cargo.toml
+        run: sed -i 's/^version = ".*"/version = "'"$RELEASE_VERSION"'"/' Cargo.toml
 
-  publish-pypi:
-    name: Publish to PyPI
-    needs: build-wheels
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
+
+  github-release:
+    name: Create GitHub Release
+    needs: build
     runs-on: ubuntu-latest
     permissions:
-      id-token: write  # required for OIDC trusted publisher
-    timeout-minutes: 10
+      contents: write
+    timeout-minutes: 15
 
     steps:
-      - name: Download wheels
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download binaries
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: wheels-*
-          merge-multiple: true
-          path: dist
+          pattern: binary-*
+          path: artifacts
 
-      # Requires a PyPI Trusted Publisher configured at pypi.org:
-      #   Repository owner: voron-software
-      #   Repository name:  rafn
-      #   Workflow filename: release.yml
-      #   Environment name: (leave blank)
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          skip-existing: true
+      - name: Set version from tag
+        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Package assets
+        run: |
+          mkdir -p release-assets
+          cd release-assets
+
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            case "$platform" in
+              linux-x64)    rust_target=x86_64-unknown-linux-gnu ;;
+              linux-arm64)  rust_target=aarch64-unknown-linux-gnu ;;
+              darwin-x64)   rust_target=x86_64-apple-darwin ;;
+              darwin-arm64) rust_target=aarch64-apple-darwin ;;
+            esac
+            cp "../artifacts/binary-${platform}/rafn" rafn
+            chmod +x rafn
+            tar -czf "rafn-v${RELEASE_VERSION}-${rust_target}.tar.gz" rafn -C .. LICENSE README.md
+            rm rafn
+          done
+
+          cp ../artifacts/binary-win32-x64/rafn.exe rafn.exe
+          zip -j "rafn-v${RELEASE_VERSION}-x86_64-pc-windows-msvc.zip" rafn.exe ../LICENSE ../README.md
+          rm rafn.exe
+
+          sha256sum *.tar.gz *.zip > "rafn-v${RELEASE_VERSION}-checksums.txt"
+
+      - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" &>/dev/null; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "$TAG" \
+              --generate-notes
+          fi
