@@ -6,6 +6,13 @@ license = "Apache-2.0"
 description = "A lightweight benchmark uploader for perfscope"
 repository = "https://github.com/voron-software/rafn"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/rafn-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [lib]
 name = "rafn"
 path = "src/lib.rs"
