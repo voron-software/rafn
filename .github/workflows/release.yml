@@ -242,9 +242,6 @@ jobs:
           pattern: binary-*
           path: artifacts
 
-      - name: Set version from tag
-        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-
       - name: Package assets
         run: |
           mkdir -p release-assets
@@ -259,26 +256,19 @@ jobs:
             esac
             cp "../artifacts/binary-${platform}/rafn" rafn
             chmod +x rafn
-            tar -czf "rafn-v${RELEASE_VERSION}-${rust_target}.tar.gz" rafn -C .. LICENSE README.md
+            tar -czf "rafn-${rust_target}.tar.gz" rafn
             rm rafn
           done
 
           cp ../artifacts/binary-win32-x64/rafn.exe rafn.exe
-          zip -j "rafn-v${RELEASE_VERSION}-x86_64-pc-windows-msvc.zip" rafn.exe ../LICENSE ../README.md
+          zip -j "rafn-x86_64-pc-windows-msvc.zip" rafn.exe
           rm rafn.exe
 
-          sha256sum *.tar.gz *.zip > "rafn-v${RELEASE_VERSION}-checksums.txt"
+          sha256sum *.tar.gz *.zip > "rafn-checksums.txt"
 
       - name: Publish GitHub Release
         if: ${{ !inputs.dry_run }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" &>/dev/null; then
-            gh release upload "$TAG" release-assets/* --clobber
-          else
-            gh release create "$TAG" release-assets/* \
-              --title "$TAG" \
-              --generate-notes
-          fi
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.3.3
+        with:
+          files: release-assets/*
+          generate_release_notes: true

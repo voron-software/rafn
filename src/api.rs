@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::proto::pb::{Benchmark, IngestRequest, ingest_service_client::IngestServiceClient};
+use anyhow::{Context, Result};
 use tonic::transport::Channel;
 
 pub struct IngestClient {
