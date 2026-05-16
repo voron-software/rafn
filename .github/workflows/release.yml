@@ -90,14 +90,14 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
 
       - name: Upload wheel
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheel-${{ matrix.platform }}
           path: dist/*.whl
           if-no-files-found: error
 
       - name: Upload binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binary-${{ matrix.platform }}
           path: target/${{ matrix.rust-target }}/release/${{ matrix.binary }}
@@ -114,7 +114,7 @@ jobs:
 
     steps:
       - name: Download wheels
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: wheel-*
           merge-multiple: true
@@ -146,7 +146,7 @@ jobs:
           node-version: '24'
 
       - name: Download binaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: binary-*
           path: artifacts
@@ -237,7 +237,7 @@ jobs:
           persist-credentials: false
 
       - name: Download binaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: binary-*
           path: artifacts
