@@ -83,7 +83,7 @@ jobs:
           rm -f Cargo.toml.bak
 
       - name: Build wheel and binary
-        uses: PyO3/maturin-action@86b9d133d34bc1b40018696f782949dac11bd380 # v1.49.4
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.maturin-target }}
           args: --release --out dist
