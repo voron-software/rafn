@@ -33,7 +33,7 @@ toml = "1.0"
 
 # gRPC
 tonic = { version = "0.12" }
-prost = { version = "0.13" }
+prost = { version = "0.14" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
