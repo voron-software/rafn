@@ -122,7 +122,7 @@ impl BenchCommand {
         }
 
         // Save the snapshot.
-        let local_store = store::LocalBackend::default();
+        let local_store = store::local_backend(&repo_config);
         local_store.save(&commit, &benchmark_sets)?;
         info!("Snapshot saved for commit {commit}");
 

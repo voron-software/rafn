@@ -48,17 +48,24 @@ pub struct RepoConfig {
     pub remote: Option<Remote>,
 
     pub bench: Option<BenchConfig>,
+
+    /// Directory containing the discovered `rafn.toml`. Resolved once during
+    /// [`load`](Self::load) so that snapshot storage and other consumers anchor
+    /// to the project root rather than the process cwd.
+    #[serde(skip)]
+    pub project_root: Option<PathBuf>,
 }
 
 impl RepoConfig {
     /// Load `rafn.toml` by walking from `cwd` up toward the filesystem root.
     /// Returns `RepoConfig::default()` when no file is found.
     pub fn load() -> Result<Self> {
-        if let Some(path) = find_rafn_toml(std::env::current_dir()?.as_path()) {
-            Self::load_from(&path)
-        } else {
-            Ok(Self::default())
-        }
+        let Some(path) = find_rafn_toml(std::env::current_dir()?.as_path()) else {
+            return Ok(Self::default());
+        };
+        let mut config = Self::load_from(&path)?;
+        config.project_root = path.parent().map(Path::to_path_buf);
+        Ok(config)
     }
 
     fn load_from(path: &Path) -> Result<Self> {

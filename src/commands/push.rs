@@ -40,8 +40,8 @@ impl PushCommand {
             return Ok(());
         }
 
+        let local_store = store::local_backend(&repo_config);
         let remote = store::remote_backend_for_push(repo_config, self.grpc_url.clone());
-        let local_store = store::LocalBackend::default();
 
         // Collect the commits to push.
         let commits: Vec<String> = if self.all {

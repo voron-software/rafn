@@ -104,12 +104,22 @@ impl Backend for SelectedBackend {
 pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
     match repo_config.backend {
-        ConfigBackend::Local => Ok(SelectedBackend::Local(LocalBackend::default())),
+        ConfigBackend::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
         ConfigBackend::Remote => {
             let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
             Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
         }
     }
+}
+
+/// Local backend anchored at the discovered project root, so snapshots resolve
+/// to the same `.rafn/snapshots` no matter which subdirectory `rafn` runs in.
+/// Falls back to the process cwd when no project root was found.
+pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
+    repo_config
+        .project_root
+        .as_deref()
+        .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
 pub fn remote_backend_for_push(repo_config: RepoConfig, grpc_url: Option<String>) -> RemoteBackend {
@@ -139,4 +149,42 @@ pub(crate) fn require_repository(config: &BackendConfig) -> Result<String> {
         .clone()
         .or_else(|| config.user_config.default_repo.clone())
         .context("Repository not specified. Use --repo or configure default_repo")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+
+    fn make_set() -> BenchmarkSet {
+        benchmark_set(
+            "test/repo",
+            "abc123",
+            None,
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
+            "rust",
+            "criterion",
+            vec![benchmark_record(
+                "foo".to_string(),
+                metric_statistics(1.0, 0.0, 0.0, 0.0, 0.0, None),
+            )],
+        )
+    }
+
+    #[test]
+    fn local_backend_anchors_to_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_config = RepoConfig {
+            project_root: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        local_backend(&repo_config)
+            .save("abc123", &[make_set()])
+            .unwrap();
+
+        // Snapshot lands under the discovered root, not the process cwd.
+        assert!(dir.path().join(".rafn/snapshots/abc123.pb").exists());
+    }
 }

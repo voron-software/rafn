@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use prost::Message;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::proto::benchmark::{
@@ -157,14 +157,6 @@ impl Backend for LocalBackend {
 
         Ok(data_points)
     }
-}
-
-pub fn default_backend() -> LocalBackend {
-    LocalBackend::default()
-}
-
-pub fn backend_with_root(root: &Path) -> LocalBackend {
-    LocalBackend::with_root(root)
 }
 
 #[cfg(test)]
