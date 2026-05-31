@@ -1,6 +1,6 @@
 //! Config command - manage configuration
 
-use crate::config_file::Config;
+use crate::config::Config;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 

@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
 
+use crate::framework::ProcessCommand;
+
 /// Result of running a benchmark command.
 #[allow(dead_code)]
 pub struct RunResult {
@@ -13,15 +15,14 @@ pub struct RunResult {
 }
 
 /// Run a benchmark command, streaming output in real-time.
-pub fn run_benchmark(command: &[String], verbose: bool) -> Result<RunResult> {
-    let (program, args) = command.split_first().context("Empty command")?;
-
-    let mut child = Command::new(program)
-        .args(args)
+pub fn run_benchmark(command: &ProcessCommand, verbose: bool) -> Result<RunResult> {
+    let mut child = Command::new(&command.program)
+        .args(&command.args)
+        .current_dir(&command.current_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to spawn: {}", program))?;
+        .with_context(|| format!("Failed to spawn: {}", command.display()))?;
 
     let stdout_pipe = child.stdout.take().unwrap();
     let stderr_pipe = child.stderr.take().unwrap();
