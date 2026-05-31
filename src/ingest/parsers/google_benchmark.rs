@@ -1,14 +1,19 @@
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
-use crate::proto::{Benchmark, Metrics};
+use crate::proto::benchmark::{
+    benchmark_record, benchmark_set, metric_statistics, microseconds_to_ns, milliseconds_to_ns,
+    seconds_to_ns,
+};
+use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 pub struct GoogleBenchmarkParser {
-    tenant_id: Uuid,
     repository: String,
     commit_sha: String,
+    branch: Option<String>,
+    run_uuid: String,
+    run_started_at: prost_types::Timestamp,
 }
 
 #[derive(Deserialize, Debug)]
@@ -27,27 +32,35 @@ struct GBenchEntry {
 }
 
 impl GoogleBenchmarkParser {
-    pub fn new(tenant_id: Uuid, repository: String, commit_sha: String) -> Self {
+    pub fn new(
+        repository: String,
+        commit_sha: String,
+        branch: Option<String>,
+        run_uuid: String,
+        run_started_at: prost_types::Timestamp,
+    ) -> Self {
         Self {
-            tenant_id,
             repository,
             commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         }
     }
 
     fn convert_to_ns(&self, value: f64, unit: &str) -> f64 {
         match unit {
             "ns" => value,
-            "us" => Metrics::from_microseconds(value),
-            "ms" => Metrics::from_milliseconds(value),
-            "s" => Metrics::from_seconds(value),
+            "us" => microseconds_to_ns(value),
+            "ms" => milliseconds_to_ns(value),
+            "s" => seconds_to_ns(value),
             _ => value,
         }
     }
 }
 
 impl BenchmarkParser for GoogleBenchmarkParser {
-    fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
+    fn parse(&self, json: &str) -> Result<Vec<BenchmarkSet>> {
         let report: GBenchReport =
             serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
@@ -97,22 +110,24 @@ impl BenchmarkParser for GoogleBenchmarkParser {
             let min_ns = sorted[0];
             let max_ns = sorted[sorted.len() - 1];
 
-            let metrics = Metrics::new(mean_ns, median_ns, stddev_ns, min_ns, max_ns);
-
-            let benchmark = Benchmark::builder()
-                .tenant_id(self.tenant_id)
-                .repository(self.repository.clone())
-                .commit_sha(self.commit_sha.clone())
-                .benchmark_name(name)
-                .toolset("google_benchmark".to_string())
-                .language("cpp".to_string())
-                .metrics(metrics)
-                .build()?;
-
-            benchmarks.push(benchmark);
+            let statistics = metric_statistics(mean_ns, median_ns, stddev_ns, min_ns, max_ns, None);
+            benchmarks.push(benchmark_record(name, statistics));
         }
 
-        Ok(benchmarks)
+        if benchmarks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![benchmark_set(
+            &self.repository,
+            &self.commit_sha,
+            self.branch.clone(),
+            self.run_uuid.clone(),
+            self.run_started_at,
+            "cpp",
+            "google_benchmark",
+            benchmarks,
+        )])
     }
 
     fn name(&self) -> &'static str {
@@ -129,7 +144,13 @@ mod tests {
     use super::*;
 
     fn make_parser() -> GoogleBenchmarkParser {
-        GoogleBenchmarkParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into())
+        GoogleBenchmarkParser::new(
+            "test/repo".into(),
+            "abc123".into(),
+            None,
+            "run-1".into(),
+            prost_types::Timestamp::default(),
+        )
     }
 
     #[test]
@@ -151,17 +172,16 @@ mod tests {
         let parser = make_parser();
         assert!(parser.can_parse(json));
 
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets.len(), 1);
 
-        let b = &benchmarks[0];
-        assert_eq!(b.benchmark_name, "BM_Fibonacci/10");
-        assert_eq!(b.toolset, "google_benchmark");
-        assert_eq!(b.language, "cpp");
-        assert!((b.metrics.mean_ns - 44.5).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 44.5).abs() < f64::EPSILON);
-        assert_eq!(b.metrics.stddev_ns, 0.0);
-        assert_eq!(b.metrics.min_ns, b.metrics.max_ns);
+        let b = &sets[0].benchmarks[0];
+        assert_eq!(b.name, "BM_Fibonacci/10");
+        let stats = b.statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 44.5).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 44.5).abs() < f64::EPSILON);
+        assert_eq!(stats.stddev.unwrap(), 0.0);
+        assert_eq!(stats.min, stats.max);
     }
 
     #[test]
@@ -189,13 +209,10 @@ mod tests {
         }"#;
 
         let parser = make_parser();
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 2);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets[0].benchmarks.len(), 2);
 
-        let names: Vec<&str> = benchmarks
-            .iter()
-            .map(|b| b.benchmark_name.as_str())
-            .collect();
+        let names: Vec<&str> = sets[0].benchmarks.iter().map(|b| b.name.as_str()).collect();
         assert!(names.contains(&"BM_FibRecursive/10"));
         assert!(names.contains(&"BM_FibIterative/10"));
     }
@@ -209,8 +226,14 @@ mod tests {
             ]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
-        assert!((benchmarks[0].metrics.mean_ns - 1500.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let mean = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .unwrap()
+            .mean
+            .unwrap();
+        assert!((mean - 1500.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -222,8 +245,14 @@ mod tests {
             ]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
-        assert!((benchmarks[0].metrics.mean_ns - 2_500_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let mean = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .unwrap()
+            .mean
+            .unwrap();
+        assert!((mean - 2_500_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -235,8 +264,14 @@ mod tests {
             ]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
-        assert!((benchmarks[0].metrics.mean_ns - 500_000_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let mean = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .unwrap()
+            .mean
+            .unwrap();
+        assert!((mean - 500_000_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -253,16 +288,17 @@ mod tests {
         }"#;
 
         let parser = make_parser();
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets[0].benchmarks.len(), 1);
 
-        let b = &benchmarks[0];
-        assert_eq!(b.benchmark_name, "BM_Fib/10");
-        assert!((b.metrics.mean_ns - 50.0).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 50.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 40.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 60.0).abs() < f64::EPSILON);
-        assert!(b.metrics.stddev_ns > 0.0);
+        let b = &sets[0].benchmarks[0];
+        assert_eq!(b.name, "BM_Fib/10");
+        let stats = b.statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 50.0).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 40.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 60.0).abs() < f64::EPSILON);
+        assert!(stats.stddev.unwrap() > 0.0);
     }
 
     #[test]

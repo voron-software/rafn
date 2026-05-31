@@ -1,13 +1,14 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rafn::commands::{
-    compare::CompareCommand, config::ConfigCommand, export::ExportCommand, ingest::IngestCommand,
-    query::QueryCommand, run::RunCommand, trend::TrendCommand,
+    bench::BenchCommand, bisect::BisectCommand, compare::CompareCommand, config::ConfigCommand,
+    push::PushCommand, trend::TrendCommand,
 };
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "rafn")]
-#[command(about = "Benchmark uploader for perfscope")]
+#[command(about = "Benchmark runner and uploader for perfscope")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -16,23 +17,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run benchmarks and auto-submit results
-    Run(RunCommand),
+    /// Run benchmarks, save a local snapshot, and show regressions
+    Bench(BenchCommand),
 
-    /// Manually ingest benchmark files
-    Ingest(IngestCommand),
+    /// Upload local snapshots to the remote server
+    Push(PushCommand),
 
-    /// Query benchmarks from the server
-    Query(QueryCommand),
+    /// Show benchmark history over time
+    Trend(TrendCommand),
 
     /// Compare benchmarks between two commits
     Compare(CompareCommand),
 
-    /// Show time-series trend data for a benchmark
-    Trend(TrendCommand),
-
-    /// Export benchmark data
-    Export(ExportCommand),
+    /// Find the commit that introduced a regression (not yet implemented)
+    Bisect(BisectCommand),
 
     /// Manage configuration
     Config(ConfigCommand),
@@ -40,15 +38,26 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
+
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run(cmd) => cmd.execute().await,
-        Commands::Ingest(cmd) => cmd.execute().await,
-        Commands::Query(cmd) => cmd.execute().await,
-        Commands::Compare(cmd) => cmd.execute().await,
+        Commands::Bench(cmd) => cmd.execute().await,
+        Commands::Push(cmd) => cmd.execute().await,
         Commands::Trend(cmd) => cmd.execute().await,
-        Commands::Export(cmd) => cmd.execute().await,
+        Commands::Compare(cmd) => cmd.execute().await,
+        Commands::Bisect(cmd) => cmd.execute().await,
         Commands::Config(cmd) => cmd.execute().await,
     }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
 }

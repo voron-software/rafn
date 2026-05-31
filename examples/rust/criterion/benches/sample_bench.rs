@@ -1,20 +1,19 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use criterion_example::{fibonacci, fibonacci_iterative};
 use std::time::Duration;
 
 fn bench_fibonacci(c: &mut Criterion) {
-    let mut c = c.benchmark_group("fibonacci");
-    c.warm_up_time(Duration::from_millis(200));
-    c.measurement_time(Duration::from_millis(500));
-    c.sample_size(30);
+    let mut group = c.benchmark_group("fibonacci");
+    group.warm_up_time(Duration::from_millis(200));
+    group.measurement_time(Duration::from_millis(500));
+    group.sample_size(30);
 
-    c.bench_function("recursive_20", |b| b.iter(|| fibonacci(black_box(20))));
-
-    c.bench_function("iterative_20", |b| {
+    group.bench_function("recursive_20", |b| b.iter(|| fibonacci(black_box(20))));
+    group.bench_function("iterative_20", |b| {
         b.iter(|| fibonacci_iterative(black_box(20)))
     });
 
-    c.finish();
+    group.finish();
 }
 
 fn bench_fibonacci_group(c: &mut Criterion) {

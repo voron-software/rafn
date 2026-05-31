@@ -1,5 +1,11 @@
 /target
 /dist
+.rafn/
 npm/rafn/bin/rafn-*
 npm/rafn/LICENSE
 node_modules/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

@@ -1,55 +1,58 @@
-use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
-use rafn::proto::{Benchmark, Metrics};
+use rafn::proto::benchmark::{
+    benchmark_record, benchmark_set, metric_statistics, milliseconds_to_ns, seconds_to_ns,
+};
 use std::hint::black_box;
-use uuid::Uuid;
 
-fn benchmark_builder_benchmark(c: &mut Criterion) {
-    let tenant_id = Uuid::new_v4();
-    let metrics = Metrics::new(1000.0, 900.0, 100.0, 800.0, 1200.0);
+fn benchmark_set_benchmark(c: &mut Criterion) {
+    let statistics = metric_statistics(1000.0, 900.0, 100.0, 800.0, 1200.0, Some(50));
 
-    c.bench_function("benchmark_builder_build", |b| {
+    c.bench_function("benchmark_set_build", |b| {
         b.iter(|| {
-            Benchmark::builder()
-                .tenant_id(black_box(tenant_id))
-                .repository(black_box("test-repo".to_string()))
-                .commit_sha(black_box("abc123def456".to_string()))
-                .benchmark_name(black_box("test_benchmark".to_string()))
-                .toolset(black_box("criterion".to_string()))
-                .language(black_box("rust".to_string()))
-                .metrics(black_box(metrics.clone()))
-                .timestamp(black_box(Utc::now()))
-                .build()
-                .unwrap()
+            let benchmark = benchmark_record(
+                black_box("test_benchmark".to_string()),
+                black_box(statistics),
+            );
+            benchmark_set(
+                black_box("owner/test-repo"),
+                black_box("abc123def456"),
+                None,
+                black_box("run-1".to_string()),
+                black_box(prost_types::Timestamp::default()),
+                black_box("rust"),
+                black_box("criterion"),
+                vec![benchmark],
+            )
         })
     });
 }
 
-fn metrics_creation_benchmark(c: &mut Criterion) {
-    c.bench_function("metrics_new", |b| {
+fn metric_statistics_benchmark(c: &mut Criterion) {
+    c.bench_function("metric_statistics_new", |b| {
         b.iter(|| {
-            Metrics::new(
+            metric_statistics(
                 black_box(1000.0),
                 black_box(900.0),
                 black_box(100.0),
                 black_box(800.0),
                 black_box(1200.0),
+                black_box(Some(50)),
             )
         })
     });
 
     c.bench_function("metrics_from_seconds", |b| {
-        b.iter(|| Metrics::from_seconds(black_box(1.0)))
+        b.iter(|| seconds_to_ns(black_box(1.0)))
     });
 
     c.bench_function("metrics_from_milliseconds", |b| {
-        b.iter(|| Metrics::from_milliseconds(black_box(1.0)))
+        b.iter(|| milliseconds_to_ns(black_box(1.0)))
     });
 }
 
 criterion_group!(
     benches,
-    benchmark_builder_benchmark,
-    metrics_creation_benchmark
+    benchmark_set_benchmark,
+    metric_statistics_benchmark
 );
 criterion_main!(benches);

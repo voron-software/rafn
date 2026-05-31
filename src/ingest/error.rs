@@ -17,8 +17,8 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("Domain error: {0}")]
-    Domain(#[from] crate::proto::Error),
+    #[error("Proto error: {0}")]
+    Proto(#[from] crate::proto::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

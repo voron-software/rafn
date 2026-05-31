@@ -6,9 +6,6 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_api_url")]
-    pub api_url: String,
-
     #[serde(default = "default_grpc_url")]
     pub grpc_url: String,
 
@@ -19,10 +16,6 @@ pub struct Config {
     pub default_repo: Option<String>,
 }
 
-fn default_api_url() -> String {
-    "http://localhost:3000".to_string()
-}
-
 fn default_grpc_url() -> String {
     "http://localhost:50051".to_string()
 }
@@ -30,7 +23,6 @@ fn default_grpc_url() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_url: default_api_url(),
             grpc_url: default_grpc_url(),
             db_url: None,
             tenant_id: None,
@@ -86,7 +78,6 @@ impl Config {
 
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
-            "api_url" => Some(self.api_url.clone()),
             "grpc_url" => Some(self.grpc_url.clone()),
             "db_url" => self.db_url.clone(),
             "tenant_id" => self.tenant_id.map(|id| id.to_string()),
@@ -97,7 +88,6 @@ impl Config {
 
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "api_url" => self.api_url = value.to_string(),
             "grpc_url" => self.grpc_url = value.to_string(),
             "db_url" => {
                 self.db_url = if value.is_empty() {
@@ -133,7 +123,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.api_url, "http://localhost:3000");
         assert_eq!(config.grpc_url, "http://localhost:50051");
         assert!(config.db_url.is_none());
         assert!(config.tenant_id.is_none());
@@ -143,9 +132,6 @@ mod tests {
     #[test]
     fn test_get_set() {
         let mut config = Config::default();
-        config.set("api_url", "http://example.com").unwrap();
-        assert_eq!(config.get("api_url").unwrap(), "http://example.com");
-
         config
             .set("grpc_url", "http://grpc.example.com:50051")
             .unwrap();

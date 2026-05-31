@@ -1,0 +1,168 @@
+//! Shared benchmark comparison logic used by `bench` and `compare` commands.
+
+use std::collections::HashMap;
+
+use colored::Colorize;
+use serde::Serialize;
+use tabled::{Table, Tabled};
+
+use crate::proto::benchmark::statistic_mean_ns;
+use crate::proto::pb::BenchmarkSet;
+
+pub fn format_duration_ms(ns: &f64) -> String {
+    format!("{:.3}", ns / 1_000_000.0)
+}
+
+pub fn format_diff_ms(ns: &f64) -> String {
+    let ms = ns / 1_000_000.0;
+    if *ns > 0.0 {
+        format!("+{ms:.3}")
+    } else {
+        format!("{ms:.3}")
+    }
+}
+
+pub fn format_percent(pct: &f64) -> String {
+    if *pct > 0.0 {
+        format!("+{pct:.1}%")
+    } else {
+        format!("{pct:.1}%")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Tabled)]
+pub struct ComparisonRow {
+    #[tabled(rename = "Benchmark")]
+    pub benchmark_name: String,
+    #[tabled(rename = "Base (ms)", display = "format_duration_ms")]
+    pub base_mean_ns: f64,
+    #[tabled(rename = "Head (ms)", display = "format_duration_ms")]
+    pub head_mean_ns: f64,
+    #[tabled(rename = "Diff (ms)", display = "format_diff_ms")]
+    pub diff_ns: f64,
+    #[tabled(rename = "Change %", display = "format_percent")]
+    pub diff_pct: f64,
+}
+
+/// Compute per-benchmark diffs between `base` and `head` snapshots.
+/// Only benchmarks present in both snapshots are included.
+/// Results are sorted by absolute diff (largest first).
+pub fn compare(base: &[BenchmarkSet], head: &[BenchmarkSet]) -> Vec<ComparisonRow> {
+    let base_map = flatten_means(base);
+    let head_map = flatten_means(head);
+
+    let mut rows: Vec<ComparisonRow> = base_map
+        .iter()
+        .filter_map(|(benchmark_name, base_mean_ns)| {
+            let head_mean_ns = head_map.get(benchmark_name)?;
+            let diff_ns = *head_mean_ns - *base_mean_ns;
+            let diff_pct = if *base_mean_ns > 0.0 {
+                (diff_ns / *base_mean_ns) * 100.0
+            } else {
+                0.0
+            };
+            Some(ComparisonRow {
+                benchmark_name: benchmark_name.clone(),
+                base_mean_ns: *base_mean_ns,
+                head_mean_ns: *head_mean_ns,
+                diff_ns,
+                diff_pct,
+            })
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        b.diff_ns
+            .abs()
+            .partial_cmp(&a.diff_ns.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows
+}
+
+fn flatten_means(sets: &[BenchmarkSet]) -> HashMap<String, f64> {
+    sets.iter()
+        .filter(|set| set.metric_name == "wall_time")
+        .flat_map(|set| set.benchmarks.iter())
+        .filter_map(|benchmark| {
+            statistic_mean_ns(benchmark).map(|mean| (benchmark.name.clone(), mean))
+        })
+        .collect()
+}
+
+/// Return `true` if any benchmark in `rows` regressed by more than `threshold`
+/// percent. A regression is defined as `diff_pct > threshold` (slower is positive).
+pub fn has_regressions(rows: &[ComparisonRow], threshold: f64) -> bool {
+    rows.iter().any(|r| r.diff_pct > threshold)
+}
+
+/// Print a comparison table and a summary line to stdout.
+pub fn print_table(rows: &[ComparisonRow]) {
+    let table = Table::new(rows).to_string();
+    println!("{table}");
+    println!();
+
+    let improvements = rows.iter().filter(|r| r.diff_ns < 0.0).count();
+    let regressions = rows.iter().filter(|r| r.diff_ns > 0.0).count();
+    println!("Summary:");
+    println!("  Total: {}", rows.len());
+    println!("  {} Improvements: {}", "✓".green(), improvements);
+    println!("  {} Regressions: {}", "✗".red(), regressions);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+
+    fn make_set(name: &str, mean_ns: f64) -> BenchmarkSet {
+        benchmark_set(
+            "owner/repo",
+            "abc123",
+            None,
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
+            "rust",
+            "criterion",
+            vec![benchmark_record(
+                name.to_string(),
+                metric_statistics(mean_ns, 0.0, 0.0, 0.0, 0.0, None),
+            )],
+        )
+    }
+
+    #[test]
+    fn test_compare_computes_diff() {
+        let base = vec![make_set("foo", 1_000_000.0)];
+        let head = vec![make_set("foo", 1_100_000.0)];
+        let rows = compare(&base, &head);
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].diff_pct - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_compare_skips_unmatched() {
+        let base = vec![make_set("foo", 1_000_000.0), make_set("bar", 2_000_000.0)];
+        let head = vec![make_set("foo", 1_000_000.0)];
+        let rows = compare(&base, &head);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].benchmark_name, "foo");
+    }
+
+    #[test]
+    fn test_has_regressions_above_threshold() {
+        let base = vec![make_set("foo", 1_000_000.0)];
+        let head = vec![make_set("foo", 1_100_000.0)]; // +10%
+        let rows = compare(&base, &head);
+        assert!(has_regressions(&rows, 5.0));
+        assert!(!has_regressions(&rows, 15.0));
+    }
+
+    #[test]
+    fn test_has_regressions_improvement_does_not_trip() {
+        let base = vec![make_set("foo", 1_100_000.0)];
+        let head = vec![make_set("foo", 1_000_000.0)]; // improvement
+        let rows = compare(&base, &head);
+        assert!(!has_regressions(&rows, 5.0));
+    }
+}

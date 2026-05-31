@@ -1,56 +1,64 @@
-# JMH Benchmark Example
+# Java JMH Example
 
-This example demonstrates how to use JMH (Java Microbenchmark Harness) to benchmark Fibonacci implementations and export results in JSON format for perfscope.
+This example shows how `rafn bench` runs a Java JMH benchmark project.
+
+## Run Locally
+
+```bash
+cd examples/java/jmh
+rafn bench
+```
+
+`rafn bench` detects the JMH Maven project, runs `mvn package`, runs the generated
+`target/benchmarks.jar` with JSON output enabled, parses the result, saves a local
+snapshot in `.rafn/snapshots/`, and compares it with the previous local snapshot
+when one exists.
+
+Pass JMH arguments after `--`:
+
+```bash
+rafn bench -- "FibonacciBenchmark.*" -wi 1 -i 2
+```
+
+When running outside a git checkout, provide the repository and commit explicitly:
+
+```bash
+RAFN_REPO=myorg/myrepo RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
+```
+
+Upload the saved snapshot separately:
+
+```bash
+rafn push
+```
+
+## Docker Usage
+
+Build from the repository root so the Dockerfile can compile the local `rafn`
+binary:
+
+```bash
+docker build -f examples/java/jmh/Dockerfile -t rafn-example-jmh .
+docker run --rm -v "$(pwd)/.rafn-jmh:/app/.rafn" rafn-example-jmh
+```
+
+The mounted `.rafn-jmh` directory keeps snapshots between container runs so the
+next run can compare against the previous snapshot. Override the default example
+metadata with environment variables:
+
+```bash
+docker run --rm \
+  -e RAFN_REPO=myorg/myrepo \
+  -e RAFN_COMMIT=$(git rev-parse HEAD) \
+  -v "$(pwd)/.rafn-jmh:/app/.rafn" \
+  rafn-example-jmh
+```
 
 ## Project Structure
 
-- `pom.xml`: Maven project configuration with JMH dependencies
-- `src/main/java/com/perfscope/example/FibonacciBenchmark.java`: JMH benchmark comparing recursive and iterative Fibonacci implementations
-- `Dockerfile`: Multi-stage build for containerized benchmark execution
+- `pom.xml` - Maven project configuration with JMH dependencies
+- `src/main/java/com/perfscope/example/FibonacciBenchmark.java` - Fibonacci benchmarks
+- `Dockerfile` - containerized `rafn bench` workflow
 
-## Benchmark Configuration
-
-The benchmark tests two Fibonacci implementations:
-- `recursiveFibonacci`: Classic recursive implementation
-- `iterativeFibonacci`: Iterative implementation with O(n) time complexity
-
-Benchmark parameters:
-- Input values (n): 10
-- Mode: Average time
-- Time unit: Nanoseconds
-- Fork: 1
-- Warmup: 1 iteration × 1s
-- Measurement: 2 iterations × 1s
-
-## Building and Running
-
-### Local Build
-
-```bash
-mvn clean package
-java -jar target/benchmarks.jar -rf json -rff results.json
-```
-
-### Docker Build
-
-```bash
-docker build -t jmh-benchmark .
-```
-
-### Docker Run
-
-```bash
-docker run --rm -v $(pwd)/results:/results jmh-benchmark
-```
-
-The benchmark results will be saved to `results/jmh-result.json` in JSON format.
-
-## Output Format
-
-JMH generates JSON output containing:
-- Benchmark names and parameters
-- Performance measurements (mean, error, percentiles)
-- JVM and runtime information
-- Fork and iteration details
-
-This JSON output can be ingested by perfscope for analysis and visualization.
+JMH writes raw JSON to `.rafn/bench-results/jmh-result.json`; Rafn stores parsed
+snapshots under `.rafn/snapshots/`.

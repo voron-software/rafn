@@ -1,14 +1,29 @@
-FROM rust:1.85-slim
+FROM rust:1-trixie AS rafn-builder
 
-WORKDIR /app
+WORKDIR /rafn
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY benches ./benches
 
-# Pre-build to cache dependencies
+RUN apt-get update && apt-get install -y musl-tools && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin rafn
+
+FROM rust:1-trixie
+
+WORKDIR /app
+
+COPY --from=rafn-builder /rafn/target/x86_64-unknown-linux-musl/release/rafn /usr/local/bin/rafn
+
+COPY examples/rust/criterion/Cargo.toml examples/rust/criterion/Cargo.lock ./
+COPY examples/rust/criterion/src ./src
+COPY examples/rust/criterion/benches ./benches
+
+# Pre-build to cache benchmark dependencies.
 RUN cargo bench --no-run
 
-RUN mkdir -p /results
+ENV RAFN_REPO=rafn/examples
+ENV RAFN_COMMIT=docker-example
 
-CMD ["sh", "-c", "cargo bench && cp -r target/criterion/* /results/"]
+CMD ["rafn", "bench"]
