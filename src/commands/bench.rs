@@ -3,7 +3,7 @@
 //! Unlike the old `run` command, results are never submitted over gRPC here;
 //! use `rafn push` to upload snapshots to the server.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -61,15 +61,14 @@ impl BenchCommand {
 
         ensure_result_dir(&framework_config.results_strategy)?;
 
-        let mut bench_exit = 0;
         for command in &framework_config.commands {
             info!("Running: {}", command.display());
             let result = runner::run_benchmark(command)?;
-            bench_exit = result.exit_status.code().unwrap_or(1);
 
             if !result.exit_status.success() {
+                let bench_exit = result.exit_status.code().unwrap_or(1);
                 error!("Benchmark command exited with code {bench_exit}");
-                break;
+                std::process::exit(bench_exit);
             }
         }
 
@@ -80,7 +79,7 @@ impl BenchCommand {
 
         if discovered.is_empty() {
             error!("No benchmark results found");
-            std::process::exit(if bench_exit == 0 { 1 } else { bench_exit });
+            std::process::exit(1);
         }
 
         info!("Found {} benchmark result(s)", discovered.len());
@@ -110,6 +109,10 @@ impl BenchCommand {
             }
         }
 
+        if benchmarks.is_empty() {
+            bail!("No benchmarks could be parsed from discovered result files");
+        }
+
         // Save the snapshot.
         let local_store = store::LocalBackend::default();
         local_store.save(&commit, &benchmarks)?;
@@ -137,9 +140,6 @@ impl BenchCommand {
             }
         }
 
-        if bench_exit != 0 {
-            std::process::exit(bench_exit);
-        }
         if regressed && !self.no_fail {
             std::process::exit(1);
         }

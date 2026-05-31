@@ -3,7 +3,7 @@
 //! When `backend = "local"` is set in `rafn.toml`, this command is a no-op
 //! (snapshots are intended to stay local only).
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Args;
 use tracing::{error, info, warn};
 
@@ -77,6 +77,7 @@ impl PushCommand {
         };
 
         let mut total_submitted = 0u32;
+        let mut failed_commits = Vec::new();
         for commit in &commits {
             let benchmarks = match local_store.load(commit)? {
                 Some(b) => b,
@@ -99,6 +100,7 @@ impl PushCommand {
                     }
                     Err(e) => {
                         error!("Error pushing {commit}: {e}");
+                        failed_commits.push(commit.clone());
                     }
                 }
             } else {
@@ -108,6 +110,14 @@ impl PushCommand {
 
         if !self.dry_run {
             info!("Total benchmarks submitted: {total_submitted}");
+        }
+
+        if !failed_commits.is_empty() {
+            bail!(
+                "Failed to push {} snapshot(s): {}",
+                failed_commits.len(),
+                failed_commits.join(", ")
+            );
         }
 
         Ok(())
