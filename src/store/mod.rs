@@ -1,7 +1,7 @@
 //! Benchmark storage backends.
 //!
-//! Local snapshots are staged under `.rafn/snapshots/`. Remote reads use the
-//! HTTP API, while remote writes for `rafn push` use the gRPC ingest service.
+//! Local snapshots are staged under `.rafn/snapshots/`. Both reads and writes
+//! for the remote backend use the gRPC service.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,6 @@ pub struct BackendConfig {
     pub repo_config: RepoConfig,
     pub user_config: Config,
     pub repo: Option<String>,
-    pub api_url: Option<String>,
     pub grpc_url: Option<String>,
 }
 
@@ -30,14 +29,12 @@ impl BackendConfig {
         repo_config: RepoConfig,
         user_config: Config,
         repo: Option<String>,
-        api_url: Option<String>,
         grpc_url: Option<String>,
     ) -> Self {
         Self {
             repo_config,
             user_config,
             repo,
-            api_url,
             grpc_url,
         }
     }
@@ -104,12 +101,12 @@ impl Backend for SelectedBackend {
     }
 }
 
-pub fn selected_backend(repo: Option<String>, api_url: Option<String>) -> Result<SelectedBackend> {
+pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
     match repo_config.backend {
         ConfigBackend::Local => Ok(SelectedBackend::Local(LocalBackend::default())),
         ConfigBackend::Remote => {
-            let config = BackendConfig::new(repo_config, Config::load()?, repo, api_url, None);
+            let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
             Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
         }
     }
@@ -119,7 +116,6 @@ pub fn remote_backend_for_push(repo_config: RepoConfig, grpc_url: Option<String>
     RemoteBackend::for_push(BackendConfig::new(
         repo_config,
         Config::load().unwrap_or_default(),
-        None,
         None,
         grpc_url,
     ))

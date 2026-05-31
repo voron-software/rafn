@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub enum Backend {
     /// Store and read snapshots from the local `.rafn/` directory.
     Local,
-    /// Push snapshots to and read history from the remote gRPC/HTTP service.
+    /// Push snapshots to and read history from the remote gRPC service.
     #[default]
     Remote,
 }

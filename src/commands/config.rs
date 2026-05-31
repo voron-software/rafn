@@ -18,7 +18,7 @@ pub enum ConfigSubcommand {
     Show,
     /// Set a configuration value
     Set {
-        /// Configuration key (api_url, db_url, tenant_id, default_repo)
+        /// Configuration key (grpc_url, db_url, tenant_id, default_repo)
         key: String,
         /// Configuration value
         value: String,
@@ -39,7 +39,6 @@ impl ConfigCommand {
                 let path = Config::config_path()?;
                 println!("Configuration file initialized at: {}", path.display());
                 println!("\nDefault values:");
-                println!("  api_url: {}", config.api_url);
                 println!(
                     "  db_url: {}",
                     config.db_url.unwrap_or_else(|| "(not set)".to_string())
@@ -63,7 +62,6 @@ impl ConfigCommand {
                 let path = Config::config_path()?;
                 println!("Configuration file: {}", path.display());
                 println!("\nCurrent values:");
-                println!("  api_url: {}", config.api_url);
                 println!(
                     "  db_url: {}",
                     config.db_url.unwrap_or_else(|| "(not set)".to_string())

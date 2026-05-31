@@ -1,8 +1,8 @@
 //! `rafn trend` — display benchmark history over time.
 //!
 //! With `backend = "local"` (rafn.toml) the history is read from the local
-//! snapshot store. With `backend = "remote"` (default) the remote HTTP API is
-//! queried.
+//! snapshot store. With `backend = "remote"` (default) the remote gRPC service
+//! is queried.
 
 use anyhow::Result;
 use clap::Args;
@@ -31,9 +31,9 @@ pub struct TrendCommand {
     #[arg(short, long, default_value = "50")]
     limit: u32,
 
-    /// API URL (overrides user config; remote backend only)
+    /// gRPC URL (overrides user config; remote backend only)
     #[arg(long)]
-    api_url: Option<String>,
+    grpc_url: Option<String>,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -44,13 +44,14 @@ pub enum OutputFormat {
 
 impl TrendCommand {
     pub async fn execute(self) -> Result<()> {
-        let backend = store::selected_backend(self.repo.clone(), self.api_url.clone())?;
+        let backend = store::selected_backend(self.repo.clone(), self.grpc_url.clone())?;
 
-        if backend.is_remote() && !matches!(self.format, OutputFormat::Json) {
-            let name = self.name.clone().ok_or_else(|| anyhow::anyhow!(
-                "Benchmark name is required for the remote backend. Use --name or switch to backend = \"local\""
-            ))?;
-            info!("Fetching trend data for benchmark: {}", name.cyan());
+        if backend.is_remote() {
+            if let Some(ref name) = self.name {
+                info!("Fetching trend data for benchmark: {}", name.cyan());
+            } else {
+                info!("Fetching trend data for all benchmarks");
+            }
             info!("Repository: {}", backend.repository().unwrap_or_default());
         }
 

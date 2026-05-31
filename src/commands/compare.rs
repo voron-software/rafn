@@ -1,7 +1,7 @@
 //! `rafn compare` — compare benchmarks between two commits.
 //!
 //! With `backend = "local"` (rafn.toml) snapshots are read from the local
-//! store. With `backend = "remote"` (default) the remote HTTP API is queried.
+//! store. With `backend = "remote"` (default) the remote gRPC service is queried.
 
 use anyhow::Result;
 use clap::Args;
@@ -29,9 +29,9 @@ pub struct CompareCommand {
     #[arg(short, long, default_value = "table")]
     format: OutputFormat,
 
-    /// API URL (overrides user config; remote backend only)
+    /// gRPC URL (overrides user config; remote backend only)
     #[arg(long)]
-    api_url: Option<String>,
+    grpc_url: Option<String>,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -47,10 +47,10 @@ impl CompareCommand {
             head: head_sha,
             repo,
             format,
-            api_url,
+            grpc_url,
         } = self;
 
-        let backend = store::selected_backend(repo, api_url)?;
+        let backend = store::selected_backend(repo, grpc_url)?;
 
         if backend.is_remote() {
             info!("Comparing commits: base={base_sha}, head={head_sha}");

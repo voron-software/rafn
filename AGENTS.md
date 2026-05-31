@@ -7,6 +7,6 @@ This repository generates Rust protobuf/tonic code from the BSR module configure
 1. Make sure `buf` is installed and authenticated if the BSR module or plugins require it:
    `buf registry login`.
 2. From the repository root, run `buf generate`.
-3. Check `crates/proto/src/gen/` for generated file name changes. If the proto package changed, update the include in `crates/proto/src/lib.rs` and remove stale generated files that `buf generate` left behind.
-4. Run `cargo check --workspace` to verify the generated API still matches the Rust code.
+3. Check `src/proto/gen/` for generated file name changes. If the proto package changed, update the include in `src/proto/mod.rs` and remove stale generated files that `buf generate` left behind.
+4. Run `cargo check --all-targets` to verify the generated API still matches the Rust code.
 5. Review `git diff` before committing; generated files are checked in.

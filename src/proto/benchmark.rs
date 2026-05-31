@@ -32,48 +32,111 @@ impl Benchmark {
     }
 }
 
-impl From<Benchmark> for pb::Benchmark {
-    fn from(b: Benchmark) -> Self {
-        let toolset = match b.toolset.as_str() {
-            "criterion" => pb::Toolset::Criterion as i32,
-            "jmh" => pb::Toolset::Jmh as i32,
-            "google_benchmark" => pb::Toolset::GoogleBenchmark as i32,
-            "benchmarkdotnet" => pb::Toolset::Benchmarkdotnet as i32,
-            _ => pb::Toolset::Unspecified as i32,
-        };
-        let language = match b.language.as_str() {
-            "rust" => pb::Language::Rust as i32,
-            "java" => pb::Language::Java as i32,
-            "cpp" => pb::Language::Cpp as i32,
-            "csharp" => pb::Language::Csharp as i32,
-            _ => pb::Language::Unspecified as i32,
-        };
-        pb::Benchmark {
-            tenant_id: b.tenant_id.to_string(),
-            repository: b.repository,
-            commit_sha: b.commit_sha,
-            benchmark_name: b.benchmark_name,
-            timestamp_ms: b.timestamp.timestamp_millis(),
-            toolset,
-            language,
-            branch: b.branch,
-            tag: b.tag,
-            ci_job_id: b.ci_job_id,
-            metrics: Some(pb::Metrics {
-                mean_ns: b.metrics.mean_ns,
-                median_ns: b.metrics.median_ns,
-                stddev_ns: b.metrics.stddev_ns,
-                min_ns: b.metrics.min_ns,
-                max_ns: b.metrics.max_ns,
-                iterations: b.metrics.iterations,
-                ops_per_sec: b.metrics.ops_per_sec,
-            }),
-            custom_metrics: b.custom_metrics,
-            labels: b.labels,
-            cpu_model: b.cpu_model,
-            os: b.os,
-            raw_json: b.raw_json,
-        }
+pub fn toolset_enum(s: &str) -> pb::Toolset {
+    match s {
+        "criterion" => pb::Toolset::Criterion,
+        "divan" => pb::Toolset::Divan,
+        "jmh" => pb::Toolset::Jmh,
+        "google_benchmark" => pb::Toolset::GoogleBenchmark,
+        "benchmarkdotnet" => pb::Toolset::BenchmarkDotnet,
+        "go_test" => pb::Toolset::GoTest,
+        "pytest_benchmark" => pb::Toolset::PytestBenchmark,
+        "pyperf" => pb::Toolset::Pyperf,
+        "vitest_bench" => pb::Toolset::VitestBench,
+        "benchmark_js" => pb::Toolset::BenchmarkJs,
+        "catch2" => pb::Toolset::Catch2,
+        _ => pb::Toolset::Unspecified,
+    }
+}
+
+pub fn language_enum(s: &str) -> pb::Language {
+    match s {
+        "rust" => pb::Language::Rust,
+        "go" => pb::Language::Go,
+        "java" => pb::Language::Java,
+        "kotlin" => pb::Language::Kotlin,
+        "csharp" => pb::Language::Csharp,
+        "fsharp" => pb::Language::Fsharp,
+        "cpp" => pb::Language::Cpp,
+        "c" => pb::Language::C,
+        "python" => pb::Language::Python,
+        "javascript" => pb::Language::Javascript,
+        "typescript" => pb::Language::Typescript,
+        _ => pb::Language::Unspecified,
+    }
+}
+
+pub fn record(b: &Benchmark) -> pb::Benchmark {
+    pb::Benchmark {
+        name: b.benchmark_name.clone(),
+        location: None,
+        parameters: Default::default(),
+        samples: vec![],
+        statistics: Some(pb::MetricStatistics {
+            mean: Some(b.metrics.mean_ns),
+            median: Some(b.metrics.median_ns),
+            stddev: Some(b.metrics.stddev_ns),
+            min: Some(b.metrics.min_ns),
+            max: Some(b.metrics.max_ns),
+            sample_count: Some(b.metrics.iterations),
+            p50: None,
+            p90: None,
+            p95: None,
+            p99: None,
+        }),
+    }
+}
+
+pub fn timestamp_to_proto(dt: DateTime<Utc>) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: dt.timestamp(),
+        nanos: dt.timestamp_subsec_nanos() as i32,
+    }
+}
+
+pub fn timestamp_from_proto(ts: &prost_types::Timestamp) -> i64 {
+    ts.seconds * 1000 + i64::from(ts.nanos) / 1_000_000
+}
+
+pub fn metrics_from_statistics(stats: &pb::MetricStatistics) -> Metrics {
+    Metrics {
+        mean_ns: stats.mean.unwrap_or(0.0),
+        median_ns: stats.median.unwrap_or(0.0),
+        stddev_ns: stats.stddev.unwrap_or(0.0),
+        min_ns: stats.min.unwrap_or(0.0),
+        max_ns: stats.max.unwrap_or(0.0),
+        iterations: stats.sample_count.unwrap_or(0),
+        ops_per_sec: 0.0,
+    }
+}
+
+pub fn benchmark_from_proto(
+    set: &pb::BenchmarkSet,
+    b: &pb::Benchmark,
+    repository: &str,
+) -> Benchmark {
+    let source = set.source.as_ref();
+    Benchmark {
+        tenant_id: uuid::Uuid::nil(),
+        repository: repository.to_string(),
+        commit_sha: source.map(|s| s.commit_sha.clone()).unwrap_or_default(),
+        benchmark_name: b.name.clone(),
+        timestamp: chrono::Utc::now(),
+        toolset: String::new(),
+        language: String::new(),
+        branch: source.and_then(|s| s.branch.clone()),
+        tag: source.and_then(|s| s.tag.clone()),
+        ci_job_id: None,
+        metrics: b
+            .statistics
+            .as_ref()
+            .map(metrics_from_statistics)
+            .unwrap_or_default(),
+        custom_metrics: Default::default(),
+        labels: Default::default(),
+        cpu_model: None,
+        os: None,
+        raw_json: None,
     }
 }
 

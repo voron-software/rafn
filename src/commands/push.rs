@@ -73,7 +73,7 @@ impl PushCommand {
         let mut client = if self.dry_run {
             None
         } else {
-            Some(remote.connect_ingest().await?)
+            Some(remote.connect_push().await?)
         };
 
         let mut total_submitted = 0u32;
@@ -96,7 +96,7 @@ impl PushCommand {
                 match c.submit(benchmarks).await {
                     Ok(count) => {
                         total_submitted += count;
-                        info!("Submitted snapshot for {commit} ({count} ingested)");
+                        info!("Submitted snapshot for {commit} ({count} pushed)");
                     }
                     Err(e) => {
                         error!("Error pushing {commit}: {e}");
