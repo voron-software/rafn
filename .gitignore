@@ -1,6 +1,6 @@
 /target
 /dist
-/.rafn
+.rafn/
 npm/rafn/bin/rafn-*
 npm/rafn/LICENSE
 node_modules/

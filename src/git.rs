@@ -1,6 +1,7 @@
 //! Git repository detection utilities.
 
 use anyhow::{Context as _, Result};
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Git repository information.
@@ -66,6 +67,19 @@ fn detect_commit_sha() -> Option<String> {
     } else {
         None
     }
+}
+
+/// Absolute path of the git repository root containing the cwd, via
+/// `git rev-parse --show-toplevel`. `None` when not inside a git repo.
+pub fn detect_git_root() -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
 }
 
 fn detect_branch() -> Option<String> {

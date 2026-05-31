@@ -1,9 +1,10 @@
 //! Repository-local configuration loaded from `rafn.toml`.
 //!
-//! Searched from the current directory upward so that `rafn` can be run
-//! from any subdirectory of a project.
+//! The project root is the git repository root (`git rev-parse --show-toplevel`).
+//! `rafn.toml` is searched from the current directory upward, bounded by the
+//! git root; `rafn` must be run inside a git repository.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -49,22 +50,26 @@ pub struct RepoConfig {
 
     pub bench: Option<BenchConfig>,
 
-    /// Directory containing the discovered `rafn.toml`. Resolved once during
-    /// [`load`](Self::load) so that snapshot storage and other consumers anchor
-    /// to the project root rather than the process cwd.
+    /// Git repository root. Resolved once during [`load`](Self::load) so that
+    /// snapshot storage and other consumers anchor to the git root.
     #[serde(skip)]
     pub project_root: Option<PathBuf>,
 }
 
 impl RepoConfig {
-    /// Load `rafn.toml` by walking from `cwd` up toward the filesystem root.
-    /// Returns `RepoConfig::default()` when no file is found.
+    /// Load `rafn.toml` by walking from `cwd` up to the git root (inclusive).
+    /// Returns a default config when no `rafn.toml` is found. Errors when
+    /// not inside a git repository.
     pub fn load() -> Result<Self> {
-        let Some(path) = find_rafn_toml(std::env::current_dir()?.as_path()) else {
-            return Ok(Self::default());
+        let git_root =
+            crate::git::detect_git_root().context("rafn must be run inside a git repository")?;
+        let cwd = std::env::current_dir()?;
+        let mut config = if let Some(path) = find_rafn_toml(&cwd, &git_root) {
+            Self::load_from(&path)?
+        } else {
+            Self::default()
         };
-        let mut config = Self::load_from(&path)?;
-        config.project_root = path.parent().map(Path::to_path_buf);
+        config.project_root = Some(git_root);
         Ok(config)
     }
 
@@ -90,23 +95,56 @@ impl RepoConfig {
     }
 }
 
-fn find_rafn_toml(start: &Path) -> Option<PathBuf> {
+/// Walk up from `start` looking for `rafn.toml`, stopping after `root`
+/// (inclusive). Returns the path to the file if found within those bounds.
+fn find_rafn_toml(start: &Path, root: &Path) -> Option<PathBuf> {
     let mut dir = start;
     loop {
         let candidate = dir.join("rafn.toml");
         if candidate.exists() {
             return Some(candidate);
         }
-        match dir.parent() {
-            Some(parent) => dir = parent,
-            None => return None,
+        if dir == root {
+            return None;
         }
+        dir = dir.parent()?;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_find_rafn_toml_at_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("rafn.toml"), "").unwrap();
+        assert_eq!(find_rafn_toml(root, root), Some(root.join("rafn.toml")));
+    }
+
+    #[test]
+    fn test_find_rafn_toml_in_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sub = root.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(root.join("rafn.toml"), "").unwrap();
+        assert_eq!(find_rafn_toml(&sub, root), Some(root.join("rafn.toml")));
+    }
+
+    #[test]
+    fn test_find_rafn_toml_above_root_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sub = root.join("inner");
+        fs::create_dir_all(&sub).unwrap();
+        // Place rafn.toml above the root boundary — should not be found.
+        fs::write(root.join("rafn.toml"), "").unwrap();
+        // Use `sub` as both start and root so the walk is bounded to `sub` only.
+        assert_eq!(find_rafn_toml(&sub, &sub), None);
+    }
 
     #[test]
     fn test_default_is_remote() {
