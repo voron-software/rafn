@@ -123,7 +123,7 @@ impl BenchmarkParser for GoogleBenchmarkParser {
             &self.commit_sha,
             self.branch.clone(),
             self.run_uuid.clone(),
-            self.run_started_at.clone(),
+            self.run_started_at,
             "cpp",
             "google_benchmark",
             benchmarks,

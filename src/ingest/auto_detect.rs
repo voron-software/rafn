@@ -14,7 +14,7 @@ pub fn detect_format(json: &str) -> Result<String> {
         "dummy".to_string(),
         None,
         String::new(),
-        ts.clone(),
+        ts,
     );
     if bdn_parser.can_parse(json) {
         return Ok("benchmarkdotnet".to_string());
@@ -26,7 +26,7 @@ pub fn detect_format(json: &str) -> Result<String> {
         "dummy".to_string(),
         None,
         String::new(),
-        ts.clone(),
+        ts,
     );
     if gbench_parser.can_parse(json) {
         return Ok("google_benchmark".to_string());
@@ -38,7 +38,7 @@ pub fn detect_format(json: &str) -> Result<String> {
         "dummy".to_string(),
         None,
         String::new(),
-        ts.clone(),
+        ts,
     );
     if jmh_parser.can_parse(json) {
         return Ok("jmh".to_string());

@@ -110,7 +110,7 @@ impl BenchmarkParser for BenchmarkDotNetParser {
             &self.commit_sha,
             self.branch.clone(),
             self.run_uuid.clone(),
-            self.run_started_at.clone(),
+            self.run_started_at,
             "csharp",
             "benchmarkdotnet",
             benchmarks,

@@ -102,7 +102,7 @@ impl BenchCommand {
                 commit.clone(),
                 branch.clone(),
                 run_uuid.clone(),
-                run_started_at.clone(),
+                run_started_at,
             );
             match parser {
                 Ok(p) => match p.parse(&json) {

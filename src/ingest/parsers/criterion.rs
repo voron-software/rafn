@@ -86,7 +86,7 @@ impl BenchmarkParser for CriterionParser {
             &self.commit_sha,
             self.branch.clone(),
             self.run_uuid.clone(),
-            self.run_started_at.clone(),
+            self.run_started_at,
             "rust",
             "criterion",
             vec![benchmark],

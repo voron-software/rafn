@@ -103,6 +103,7 @@ pub fn benchmark_record(name: String, statistics: pb::MetricStatistics) -> pb::B
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn benchmark_set(
     repository: &str,
     commit_sha: &str,
