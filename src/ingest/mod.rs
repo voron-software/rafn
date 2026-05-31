@@ -12,24 +12,43 @@ use self::parsers::benchmarkdotnet::BenchmarkDotNetParser;
 use self::parsers::criterion::CriterionParser;
 use self::parsers::google_benchmark::GoogleBenchmarkParser;
 use self::parsers::jmh::JmhParser;
-use uuid::Uuid;
 
 pub fn get_parser(
     format: &str,
-    tenant_id: Uuid,
     repository: String,
     commit_sha: String,
+    branch: Option<String>,
+    run_uuid: String,
+    run_started_at: prost_types::Timestamp,
 ) -> Result<Box<dyn BenchmarkParser>> {
     match format {
         "criterion" => Ok(Box::new(CriterionParser::new(
-            tenant_id, repository, commit_sha,
+            repository,
+            commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         ))),
-        "jmh" => Ok(Box::new(JmhParser::new(tenant_id, repository, commit_sha))),
+        "jmh" => Ok(Box::new(JmhParser::new(
+            repository,
+            commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
+        ))),
         "benchmarkdotnet" => Ok(Box::new(BenchmarkDotNetParser::new(
-            tenant_id, repository, commit_sha,
+            repository,
+            commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         ))),
         "google_benchmark" => Ok(Box::new(GoogleBenchmarkParser::new(
-            tenant_id, repository, commit_sha,
+            repository,
+            commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         ))),
         _ => Err(Error::UnknownFormat),
     }

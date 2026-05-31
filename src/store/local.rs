@@ -1,10 +1,15 @@
 //! Local snapshot store.
 
 use anyhow::{Context, Result};
+use prost::Message;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::proto::Benchmark;
+use crate::proto::benchmark::{
+    statistic_mean_ns, statistic_median_ns, statistic_stddev_ns, timestamp_from_system_time,
+    timestamp_to_millis,
+};
+use crate::proto::pb::{BenchmarkSet, PushResultsRequest};
 
 use super::{Backend, TrendDataPoint, TrendQuery};
 
@@ -30,37 +35,39 @@ impl LocalBackend {
     }
 
     fn snapshot_path(&self, commit: &str) -> PathBuf {
-        self.snapshots_dir().join(format!("{commit}.json"))
+        self.snapshots_dir().join(format!("{commit}.pb"))
     }
 
-    pub fn save(&self, commit: &str, benchmarks: &[Benchmark]) -> Result<()> {
+    pub fn save(&self, commit: &str, benchmark_sets: &[BenchmarkSet]) -> Result<()> {
         let dir = self.snapshots_dir();
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("Failed to create snapshot directory: {}", dir.display()))?;
 
         let path = self.snapshot_path(commit);
-        let content =
-            serde_json::to_string_pretty(benchmarks).context("Failed to serialize benchmarks")?;
+        let content = PushResultsRequest {
+            benchmark_sets: benchmark_sets.to_vec(),
+        }
+        .encode_to_vec();
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write snapshot: {}", path.display()))?;
 
         Ok(())
     }
 
-    pub fn load(&self, commit: &str) -> Result<Option<Vec<Benchmark>>> {
+    pub fn load(&self, commit: &str) -> Result<Option<Vec<BenchmarkSet>>> {
         let path = self.snapshot_path(commit);
         if !path.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(&path)
+        let content = std::fs::read(&path)
             .with_context(|| format!("Failed to read snapshot: {}", path.display()))?;
-        let benchmarks: Vec<Benchmark> = serde_json::from_str(&content).with_context(|| {
+        let request = PushResultsRequest::decode(content.as_slice()).with_context(|| {
             format!(
-                "Failed to parse snapshot ({}): corrupt JSON?",
+                "Failed to parse snapshot ({}): corrupt protobuf?",
                 path.display()
             )
         })?;
-        Ok(Some(benchmarks))
+        Ok(Some(request.benchmark_sets))
     }
 
     pub fn list_commits(&self) -> Result<Vec<(String, SystemTime)>> {
@@ -75,7 +82,7 @@ impl LocalBackend {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 let name = path.file_name()?.to_str()?.to_owned();
-                let commit = name.strip_suffix(".json")?.to_owned();
+                let commit = name.strip_suffix(".pb")?.to_owned();
                 let mtime = entry.metadata().ok()?.modified().ok()?;
                 Some((commit, mtime))
             })
@@ -85,7 +92,7 @@ impl LocalBackend {
         Ok(entries)
     }
 
-    pub fn previous_before(&self, current_commit: &str) -> Result<Option<Vec<Benchmark>>> {
+    pub fn previous_before(&self, current_commit: &str) -> Result<Option<Vec<BenchmarkSet>>> {
         let previous = self
             .list_commits()?
             .into_iter()
@@ -100,7 +107,7 @@ impl LocalBackend {
 }
 
 impl Backend for LocalBackend {
-    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<Benchmark>> {
+    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>> {
         self.load(commit_sha)?.ok_or_else(|| {
             anyhow::anyhow!(
                 "No local snapshot found for commit '{commit_sha}'. \
@@ -113,29 +120,38 @@ impl Backend for LocalBackend {
         let mut data_points = Vec::new();
 
         for (commit, mtime) in &self.list_commits()? {
-            let benchmarks = match self.load(commit)? {
+            let benchmark_sets = match self.load(commit)? {
                 Some(b) => b,
                 None => continue,
             };
-            let timestamp_ms = mtime
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let fallback_timestamp_ms = timestamp_to_millis(&timestamp_from_system_time(*mtime));
 
-            for bench in benchmarks {
-                if let Some(ref name) = query.benchmark_name
-                    && bench.benchmark_name != *name
-                {
-                    continue;
+            for set in benchmark_sets {
+                let timestamp_ms = set
+                    .run_started_at
+                    .as_ref()
+                    .map(timestamp_to_millis)
+                    .unwrap_or(fallback_timestamp_ms);
+                for bench in set.benchmarks {
+                    if let Some(ref name) = query.benchmark_name
+                        && bench.name != *name
+                    {
+                        continue;
+                    }
+                    let Some(mean_ns) = statistic_mean_ns(&bench) else {
+                        continue;
+                    };
+                    let median_ns = statistic_median_ns(&bench);
+                    let stddev_ns = statistic_stddev_ns(&bench);
+                    data_points.push(TrendDataPoint {
+                        benchmark_name: bench.name,
+                        commit_sha: commit.clone(),
+                        timestamp: timestamp_ms,
+                        mean_ns,
+                        median_ns,
+                        stddev_ns,
+                    });
                 }
-                data_points.push(TrendDataPoint {
-                    benchmark_name: bench.benchmark_name,
-                    commit_sha: commit.clone(),
-                    timestamp: timestamp_ms,
-                    mean_ns: bench.metrics.mean_ns,
-                    median_ns: bench.metrics.median_ns,
-                    stddev_ns: bench.metrics.stddev_ns,
-                });
             }
         }
 
@@ -154,32 +170,24 @@ pub fn backend_with_root(root: &Path) -> LocalBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{Benchmark, Metrics};
-    use chrono::Utc;
-    use uuid::Uuid;
+    use crate::proto::benchmark::{
+        benchmark_record, benchmark_set, metric_statistics, statistic_mean_ns,
+    };
 
-    fn make_benchmark(name: &str, mean_ns: f64) -> Benchmark {
-        Benchmark {
-            tenant_id: Uuid::nil(),
-            repository: "test/repo".to_string(),
-            commit_sha: "abc123".to_string(),
-            benchmark_name: name.to_string(),
-            timestamp: Utc::now(),
-            toolset: "criterion".to_string(),
-            language: "rust".to_string(),
-            branch: None,
-            tag: None,
-            ci_job_id: None,
-            metrics: Metrics {
-                mean_ns,
-                ..Default::default()
-            },
-            custom_metrics: Default::default(),
-            labels: Default::default(),
-            cpu_model: None,
-            os: None,
-            raw_json: None,
-        }
+    fn make_set(name: &str, mean_ns: f64) -> BenchmarkSet {
+        benchmark_set(
+            "test/repo",
+            "abc123",
+            None,
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
+            "rust",
+            "criterion",
+            vec![benchmark_record(
+                name.to_string(),
+                metric_statistics(mean_ns, 0.0, 0.0, 0.0, 0.0, None),
+            )],
+        )
     }
 
     #[test]
@@ -187,14 +195,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBackend::with_root(dir.path());
 
-        let benches = vec![make_benchmark("foo", 1_000_000.0)];
+        let benches = vec![make_set("foo", 1_000_000.0)];
         store.save("abc123", &benches).unwrap();
 
         let loaded = store.load("abc123").unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].benchmark_name, "foo");
+        assert_eq!(loaded[0].benchmarks[0].name, "foo");
     }
 
     #[test]
@@ -210,14 +218,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBackend::with_root(dir.path());
 
-        store.save("commit1", &[make_benchmark("a", 1.0)]).unwrap();
+        store.save("commit1", &[make_set("a", 1.0)]).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        store.save("commit2", &[make_benchmark("a", 2.0)]).unwrap();
+        store.save("commit2", &[make_set("a", 2.0)]).unwrap();
 
         let prev = store.previous_before("commit2").unwrap();
         assert!(prev.is_some());
         let prev = prev.unwrap();
-        assert_eq!(prev[0].metrics.mean_ns, 1.0);
+        assert_eq!(statistic_mean_ns(&prev[0].benchmarks[0]), Some(1.0));
     }
 
     #[test]
@@ -225,7 +233,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBackend::with_root(dir.path());
 
-        store.save("only", &[make_benchmark("a", 1.0)]).unwrap();
+        store.save("only", &[make_set("a", 1.0)]).unwrap();
         let prev = store.previous_before("only").unwrap();
         assert!(prev.is_none());
     }
@@ -246,7 +254,7 @@ mod tests {
         store
             .save(
                 "commit1",
-                &[make_benchmark("kept", 1.0), make_benchmark("filtered", 2.0)],
+                &[make_set("kept", 1.0), make_set("filtered", 2.0)],
             )
             .unwrap();
 

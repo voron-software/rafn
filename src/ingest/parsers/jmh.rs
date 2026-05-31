@@ -1,14 +1,19 @@
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
-use crate::proto::{Benchmark, Metrics};
+use crate::proto::benchmark::{
+    benchmark_record, benchmark_set, metric_statistics, microseconds_to_ns, milliseconds_to_ns,
+    seconds_to_ns,
+};
+use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 pub struct JmhParser {
-    tenant_id: Uuid,
     repository: String,
     commit_sha: String,
+    branch: Option<String>,
+    run_uuid: String,
+    run_started_at: prost_types::Timestamp,
 }
 
 /// JMH outputs "NaN" as a JSON string (not a number) when statistics can't be computed.
@@ -93,27 +98,35 @@ struct PrimaryMetric {
 }
 
 impl JmhParser {
-    pub fn new(tenant_id: Uuid, repository: String, commit_sha: String) -> Self {
+    pub fn new(
+        repository: String,
+        commit_sha: String,
+        branch: Option<String>,
+        run_uuid: String,
+        run_started_at: prost_types::Timestamp,
+    ) -> Self {
         Self {
-            tenant_id,
             repository,
             commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         }
     }
 
     fn convert_to_ns(&self, value: f64, unit: &str) -> f64 {
         match unit {
             "ns/op" => value,
-            "us/op" => Metrics::from_microseconds(value),
-            "ms/op" => Metrics::from_milliseconds(value),
-            "s/op" => Metrics::from_seconds(value),
+            "us/op" => microseconds_to_ns(value),
+            "ms/op" => milliseconds_to_ns(value),
+            "s/op" => seconds_to_ns(value),
             _ => value,
         }
     }
 }
 
 impl BenchmarkParser for JmhParser {
-    fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
+    fn parse(&self, json: &str) -> Result<Vec<BenchmarkSet>> {
         let jmh_benchmarks: Vec<JmhBenchmark> =
             serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
@@ -151,22 +164,24 @@ impl BenchmarkParser for JmhParser {
                 .map(|&v| self.convert_to_ns(v, &jmh_bench.primary_metric.score_unit))
                 .unwrap_or(mean_ns + stddev_ns);
 
-            let metrics = Metrics::new(mean_ns, median_ns, stddev_ns, min_ns, max_ns);
-
-            let benchmark = Benchmark::builder()
-                .tenant_id(self.tenant_id)
-                .repository(self.repository.clone())
-                .commit_sha(self.commit_sha.clone())
-                .benchmark_name(jmh_bench.benchmark)
-                .toolset("jmh".to_string())
-                .language("java".to_string())
-                .metrics(metrics)
-                .build()?;
-
-            benchmarks.push(benchmark);
+            let statistics = metric_statistics(mean_ns, median_ns, stddev_ns, min_ns, max_ns, None);
+            benchmarks.push(benchmark_record(jmh_bench.benchmark, statistics));
         }
 
-        Ok(benchmarks)
+        if benchmarks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![benchmark_set(
+            &self.repository,
+            &self.commit_sha,
+            self.branch.clone(),
+            self.run_uuid.clone(),
+            self.run_started_at.clone(),
+            "java",
+            "jmh",
+            benchmarks,
+        )])
     }
 
     fn name(&self) -> &'static str {
@@ -181,6 +196,16 @@ impl BenchmarkParser for JmhParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_parser() -> JmhParser {
+        JmhParser::new(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            None,
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
+        )
+    }
 
     #[test]
     fn test_jmh_parser_single_benchmark() {
@@ -198,27 +223,21 @@ mod tests {
             }
         }]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
+        let parser = make_parser();
 
         assert!(parser.can_parse(json));
 
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets.len(), 1);
 
-        let b = &benchmarks[0];
-        assert_eq!(b.benchmark_name, "com.example.MyBenchmark.testMethod");
-        assert_eq!(b.toolset, "jmh");
-        assert_eq!(b.language, "java");
-        assert!((b.metrics.mean_ns - 1234.5).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 1230.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 1100.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 1400.0).abs() < f64::EPSILON);
-        assert!((b.metrics.stddev_ns - 50.0).abs() < 0.1);
-        assert!(b.metrics.ops_per_sec > 0.0);
+        let b = &sets[0].benchmarks[0];
+        assert_eq!(b.name, "com.example.MyBenchmark.testMethod");
+        let stats = b.statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 1400.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.unwrap() - 50.0).abs() < 0.1);
     }
 
     #[test]
@@ -233,18 +252,12 @@ mod tests {
             }
         }]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
-
-        let benchmarks = parser.parse(json).unwrap();
-        let b = &benchmarks[0];
-        assert!((b.metrics.mean_ns - 1500.0).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 1400.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 1100.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 1800.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 1500.0).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 1400.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 1800.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -259,18 +272,12 @@ mod tests {
             }
         }]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
-
-        let benchmarks = parser.parse(json).unwrap();
-        let b = &benchmarks[0];
-        assert!((b.metrics.mean_ns - 2_500_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 2_400_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 2_000_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 3_000_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 2_500_000.0).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 2_400_000.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 2_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 3_000_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -285,18 +292,12 @@ mod tests {
             }
         }]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
-
-        let benchmarks = parser.parse(json).unwrap();
-        let b = &benchmarks[0];
-        assert!((b.metrics.mean_ns - 500_000_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 480_000_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 400_000_000.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 600_000_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 500_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 480_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 400_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 600_000_000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -318,16 +319,12 @@ mod tests {
             }
         ]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
-
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 2);
-        assert!((benchmarks[0].metrics.mean_ns - 1000.0).abs() < f64::EPSILON);
-        assert!((benchmarks[1].metrics.mean_ns - 2000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json).unwrap();
+        assert_eq!(sets[0].benchmarks.len(), 2);
+        let first = sets[0].benchmarks[0].statistics.as_ref().unwrap();
+        let second = sets[0].benchmarks[1].statistics.as_ref().unwrap();
+        assert!((first.mean.unwrap() - 1000.0).abs() < f64::EPSILON);
+        assert!((second.mean.unwrap() - 2000.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -341,40 +338,28 @@ mod tests {
             }
         }]"#;
 
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
+        let parser = make_parser();
 
         assert!(parser.can_parse(json));
 
-        let benchmarks = parser.parse(json).unwrap();
-        let b = &benchmarks[0];
-        assert!((b.metrics.median_ns - 1234.5).abs() < f64::EPSILON);
+        let sets = parser.parse(json).unwrap();
+        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
+        assert!((stats.median.unwrap() - 1234.5).abs() < f64::EPSILON);
         let expected_stddev = 50.0;
-        assert!((b.metrics.stddev_ns - expected_stddev).abs() < 0.1);
-        assert!((b.metrics.min_ns - (1234.5 - expected_stddev)).abs() < 0.1);
-        assert!((b.metrics.max_ns - (1234.5 + expected_stddev)).abs() < 0.1);
+        assert!((stats.stddev.unwrap() - expected_stddev).abs() < 0.1);
+        assert!((stats.min.unwrap() - (1234.5 - expected_stddev)).abs() < 0.1);
+        assert!((stats.max.unwrap() - (1234.5 + expected_stddev)).abs() < 0.1);
     }
 
     #[test]
     fn test_jmh_can_parse_invalid() {
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
+        let parser = make_parser();
         assert!(!parser.can_parse(r#"{"not": "jmh"}"#));
     }
 
     #[test]
     fn test_jmh_can_parse_criterion_format() {
-        let parser = JmhParser::new(
-            Uuid::new_v4(),
-            "test/repo".to_string(),
-            "abc123".to_string(),
-        );
+        let parser = make_parser();
         assert!(!parser.can_parse(r#"{"id": "my_benchmark", "mean": {"point_estimate": 1234.5}}"#));
     }
 }

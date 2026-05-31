@@ -54,9 +54,11 @@ fn criterion_parser_benchmark(c: &mut Criterion) {
     }"#;
 
     let parser = CriterionParser::new(
-        uuid::Uuid::new_v4(),
         "test-repo".to_string(),
         "abc123".to_string(),
+        None,
+        "run-1".to_string(),
+        prost_types::Timestamp::default(),
     );
 
     c.bench_function("parse_criterion_json", |b| {

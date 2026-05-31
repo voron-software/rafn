@@ -5,8 +5,5 @@ pub mod pb {
 
 pub mod benchmark;
 pub mod error;
-pub mod metrics;
 
-pub use benchmark::{Benchmark, BenchmarkBuilder};
 pub use error::{Error, Result};
-pub use metrics::Metrics;

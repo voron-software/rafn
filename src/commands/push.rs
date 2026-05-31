@@ -79,21 +79,24 @@ impl PushCommand {
         let mut total_submitted = 0u32;
         let mut failed_commits = Vec::new();
         for commit in &commits {
-            let benchmarks = match local_store.load(commit)? {
+            let benchmark_sets = match local_store.load(commit)? {
                 Some(b) => b,
                 None => {
                     warn!("No snapshot found for commit {commit}, skipping");
                     continue;
                 }
             };
+            let benchmark_count: usize =
+                benchmark_sets.iter().map(|set| set.benchmarks.len()).sum();
 
             info!(
-                "Pushing snapshot for {commit} ({} benchmarks)",
-                benchmarks.len()
+                "Pushing snapshot for {commit} ({} benchmark sets, {} benchmarks)",
+                benchmark_sets.len(),
+                benchmark_count
             );
 
             if let Some(ref mut c) = client {
-                match c.submit(benchmarks).await {
+                match c.submit(benchmark_sets).await {
                     Ok(count) => {
                         total_submitted += count;
                         info!("Submitted snapshot for {commit} ({count} pushed)");

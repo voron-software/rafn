@@ -1,13 +1,15 @@
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
-use crate::proto::{Benchmark, Metrics};
+use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
-use uuid::Uuid;
 
 pub struct BenchmarkDotNetParser {
-    tenant_id: Uuid,
     repository: String,
     commit_sha: String,
+    branch: Option<String>,
+    run_uuid: String,
+    run_started_at: prost_types::Timestamp,
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,11 +49,19 @@ struct Statistics {
 }
 
 impl BenchmarkDotNetParser {
-    pub fn new(tenant_id: Uuid, repository: String, commit_sha: String) -> Self {
+    pub fn new(
+        repository: String,
+        commit_sha: String,
+        branch: Option<String>,
+        run_uuid: String,
+        run_started_at: prost_types::Timestamp,
+    ) -> Self {
         Self {
-            tenant_id,
             repository,
             commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         }
     }
 
@@ -71,7 +81,7 @@ impl BenchmarkDotNetParser {
 }
 
 impl BenchmarkParser for BenchmarkDotNetParser {
-    fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
+    fn parse(&self, json: &str) -> Result<Vec<BenchmarkSet>> {
         let report: BenchmarkDotNetReport =
             serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
@@ -80,30 +90,31 @@ impl BenchmarkParser for BenchmarkDotNetParser {
         for bdn_bench in report.benchmarks {
             let name = self.construct_name(&bdn_bench);
 
-            // BenchmarkDotNet reports times in nanoseconds
-            let metrics = Metrics::new(
+            let statistics = metric_statistics(
                 bdn_bench.statistics.mean,
                 bdn_bench.statistics.median,
                 bdn_bench.statistics.std_dev,
                 bdn_bench.statistics.min,
                 bdn_bench.statistics.max,
-            )
-            .with_iterations(bdn_bench.statistics.n);
-
-            let benchmark = Benchmark::builder()
-                .tenant_id(self.tenant_id)
-                .repository(self.repository.clone())
-                .commit_sha(self.commit_sha.clone())
-                .benchmark_name(name)
-                .toolset("benchmarkdotnet".to_string())
-                .language("csharp".to_string())
-                .metrics(metrics)
-                .build()?;
-
-            benchmarks.push(benchmark);
+                Some(bdn_bench.statistics.n),
+            );
+            benchmarks.push(benchmark_record(name, statistics));
         }
 
-        Ok(benchmarks)
+        if benchmarks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![benchmark_set(
+            &self.repository,
+            &self.commit_sha,
+            self.branch.clone(),
+            self.run_uuid.clone(),
+            self.run_started_at.clone(),
+            "csharp",
+            "benchmarkdotnet",
+            benchmarks,
+        )])
     }
 
     fn name(&self) -> &'static str {
@@ -119,6 +130,16 @@ impl BenchmarkParser for BenchmarkDotNetParser {
 mod tests {
     use super::*;
 
+    fn make_parser() -> BenchmarkDotNetParser {
+        BenchmarkDotNetParser::new(
+            "test/repo".into(),
+            "abc123".into(),
+            None,
+            "run-1".into(),
+            prost_types::Timestamp::default(),
+        )
+    }
+
     #[test]
     fn test_single_benchmark() {
         let json = r#"{
@@ -133,23 +154,21 @@ mod tests {
             }]
         }"#;
 
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
+        let parser = make_parser();
 
         assert!(parser.can_parse(json));
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets.len(), 1);
 
-        let b = &benchmarks[0];
-        assert_eq!(b.benchmark_name, "MyNamespace.MyClass.TestMethod");
-        assert_eq!(b.toolset, "benchmarkdotnet");
-        assert_eq!(b.language, "csharp");
-        assert!((b.metrics.mean_ns - 1234.5).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 1230.0).abs() < f64::EPSILON);
-        assert!((b.metrics.stddev_ns - 50.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 1100.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 1400.0).abs() < f64::EPSILON);
-        assert_eq!(b.metrics.iterations, 100);
+        let b = &sets[0].benchmarks[0];
+        assert_eq!(b.name, "MyNamespace.MyClass.TestMethod");
+        let stats = b.statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.unwrap() - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 1400.0).abs() < f64::EPSILON);
+        assert_eq!(stats.sample_count, Some(100));
     }
 
     #[test]
@@ -167,12 +186,10 @@ mod tests {
             ]
         }"#;
 
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 2);
-        assert_eq!(benchmarks[0].benchmark_name, "MyClass.Method1");
-        assert_eq!(benchmarks[1].benchmark_name, "MyClass.Method2");
+        let benchmarks = make_parser().parse(json).unwrap();
+        assert_eq!(benchmarks[0].benchmarks.len(), 2);
+        assert_eq!(benchmarks[0].benchmarks[0].name, "MyClass.Method1");
+        assert_eq!(benchmarks[0].benchmarks[1].name, "MyClass.Method2");
     }
 
     #[test]
@@ -185,10 +202,8 @@ mod tests {
             }]
         }"#;
 
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks[0].benchmark_name, "Custom Display Name");
+        let benchmarks = make_parser().parse(json).unwrap();
+        assert_eq!(benchmarks[0].benchmarks[0].name, "Custom Display Name");
     }
 
     #[test]
@@ -200,11 +215,9 @@ mod tests {
             }]
         }"#;
 
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
-        let benchmarks = parser.parse(json).unwrap();
+        let benchmarks = make_parser().parse(json).unwrap();
         assert_eq!(
-            benchmarks[0].benchmark_name,
+            benchmarks[0].benchmarks[0].name,
             "MyClass.TestMethod: N=100, Size=1024"
         );
     }
@@ -219,17 +232,13 @@ mod tests {
             }]
         }"#;
 
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks[0].benchmark_name, "Custom Name: N=100");
+        let benchmarks = make_parser().parse(json).unwrap();
+        assert_eq!(benchmarks[0].benchmarks[0].name, "Custom Name: N=100");
     }
 
     #[test]
     fn test_can_parse_criterion_json_negative() {
         let criterion_json = r#"{"id": "my_benchmark", "mean": {"point_estimate": 1234.5}, "median": {"point_estimate": 1230.0}, "std_dev": {"point_estimate": 50.0}}"#;
-        let parser =
-            BenchmarkDotNetParser::new(Uuid::new_v4(), "test/repo".into(), "abc123".into());
-        assert!(!parser.can_parse(criterion_json));
+        assert!(!make_parser().can_parse(criterion_json));
     }
 }

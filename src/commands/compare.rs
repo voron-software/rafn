@@ -8,7 +8,7 @@ use clap::Args;
 use tracing::info;
 
 use crate::comparison;
-use crate::proto::Benchmark;
+use crate::proto::pb::BenchmarkSet;
 use crate::store::{self, Backend};
 
 #[derive(Args)]
@@ -70,7 +70,11 @@ impl CompareCommand {
     }
 }
 
-fn output_results(format: OutputFormat, base: Vec<Benchmark>, head: Vec<Benchmark>) -> Result<()> {
+fn output_results(
+    format: OutputFormat,
+    base: Vec<BenchmarkSet>,
+    head: Vec<BenchmarkSet>,
+) -> Result<()> {
     let rows = comparison::compare(&base, &head);
 
     if rows.is_empty() {

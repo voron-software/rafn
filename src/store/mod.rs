@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
 use crate::config::{Backend as ConfigBackend, Config, RepoConfig};
-use crate::proto::Benchmark;
+use crate::proto::pb::BenchmarkSet;
 
 pub mod local;
 pub mod remote;
@@ -63,7 +63,7 @@ pub struct TrendDataPoint {
 }
 
 pub(crate) trait Backend {
-    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<Benchmark>>;
+    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>>;
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>>;
 }
 
@@ -86,7 +86,7 @@ impl SelectedBackend {
 }
 
 impl Backend for SelectedBackend {
-    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<Benchmark>> {
+    async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>> {
         match self {
             Self::Local(backend) => backend.benchmarks_for_commit(commit_sha).await,
             Self::Remote(backend) => backend.benchmarks_for_commit(commit_sha).await,

@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::config::{Config, RepoConfig};
+use crate::proto::benchmark::timestamp_now;
 use crate::{comparison, discovery, framework, git, ingest, runner, store};
 
 #[derive(Args)]
@@ -84,21 +85,28 @@ impl BenchCommand {
 
         info!("Found {} benchmark result(s)", discovered.len());
 
-        let (repository, commit, _branch) =
+        let (repository, commit, branch) =
             git::GitInfo::resolve(self.repo, self.commit, self.branch);
         let repository = repository?;
         let commit = commit?;
+        let run_uuid = Uuid::new_v4().to_string();
+        let run_started_at = timestamp_now();
 
-        // Parse all discovered results into the domain Benchmark type.
-        let mut benchmarks = Vec::new();
+        let mut benchmark_sets = Vec::new();
         for bench in &discovered {
             let json = serde_json::to_string(&bench.data)?;
             let format = ingest::detect_format(&json).unwrap_or_else(|_| "criterion".to_string());
-            let parser =
-                ingest::get_parser(&format, Uuid::nil(), repository.clone(), commit.clone());
+            let parser = ingest::get_parser(
+                &format,
+                repository.clone(),
+                commit.clone(),
+                branch.clone(),
+                run_uuid.clone(),
+                run_started_at.clone(),
+            );
             match parser {
                 Ok(p) => match p.parse(&json) {
-                    Ok(mut parsed) => benchmarks.append(&mut parsed),
+                    Ok(mut parsed) => benchmark_sets.append(&mut parsed),
                     Err(e) => {
                         warn!("Failed to parse {}: {e}", bench.name);
                     }
@@ -109,13 +117,13 @@ impl BenchCommand {
             }
         }
 
-        if benchmarks.is_empty() {
+        if benchmark_sets.is_empty() {
             bail!("No benchmarks could be parsed from discovered result files");
         }
 
         // Save the snapshot.
         let local_store = store::LocalBackend::default();
-        local_store.save(&commit, &benchmarks)?;
+        local_store.save(&commit, &benchmark_sets)?;
         info!("Snapshot saved for commit {commit}");
 
         // Compare against the previous snapshot and show regressions.
@@ -127,7 +135,7 @@ impl BenchCommand {
                 info!("No previous snapshot found — skipping regression check.");
             }
             Some(prev_benches) => {
-                let rows = comparison::compare(&prev_benches, &benchmarks);
+                let rows = comparison::compare(&prev_benches, &benchmark_sets);
                 if rows.is_empty() {
                     info!("No common benchmarks with previous snapshot.");
                 } else {

@@ -1,13 +1,15 @@
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
-use crate::proto::{Benchmark, Metrics};
+use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
-use uuid::Uuid;
 
 pub struct CriterionParser {
-    tenant_id: Uuid,
     repository: String,
     commit_sha: String,
+    branch: Option<String>,
+    run_uuid: String,
+    run_started_at: prost_types::Timestamp,
 }
 
 #[derive(Deserialize, Debug)]
@@ -43,17 +45,25 @@ struct ConfidenceInterval {
 }
 
 impl CriterionParser {
-    pub fn new(tenant_id: Uuid, repository: String, commit_sha: String) -> Self {
+    pub fn new(
+        repository: String,
+        commit_sha: String,
+        branch: Option<String>,
+        run_uuid: String,
+        run_started_at: prost_types::Timestamp,
+    ) -> Self {
         Self {
-            tenant_id,
             repository,
             commit_sha,
+            branch,
+            run_uuid,
+            run_started_at,
         }
     }
 }
 
 impl BenchmarkParser for CriterionParser {
-    fn parse(&self, json: &str) -> Result<Vec<Benchmark>> {
+    fn parse(&self, json: &str) -> Result<Vec<BenchmarkSet>> {
         let criterion_bench: CriterionBenchmark =
             serde_json::from_str(json).map_err(crate::proto::Error::Serialization)?;
 
@@ -61,26 +71,26 @@ impl BenchmarkParser for CriterionParser {
         let median_ns = criterion_bench.median.point_estimate;
         let stddev_ns = criterion_bench.std_dev.point_estimate;
 
-        let metrics = Metrics::new(
+        let statistics = metric_statistics(
             mean_ns,
             median_ns,
             stddev_ns,
             median_ns - stddev_ns.max(0.0),
             median_ns + stddev_ns,
-        )
-        .with_iterations(criterion_bench.total_iterations);
+            Some(criterion_bench.total_iterations),
+        );
+        let benchmark = benchmark_record(criterion_bench.benchmark_id, statistics);
 
-        let benchmark = Benchmark::builder()
-            .tenant_id(self.tenant_id)
-            .repository(self.repository.clone())
-            .commit_sha(self.commit_sha.clone())
-            .benchmark_name(criterion_bench.benchmark_id)
-            .toolset("criterion".to_string())
-            .language("rust".to_string())
-            .metrics(metrics)
-            .build()?;
-
-        Ok(vec![benchmark])
+        Ok(vec![benchmark_set(
+            &self.repository,
+            &self.commit_sha,
+            self.branch.clone(),
+            self.run_uuid.clone(),
+            self.run_started_at.clone(),
+            "rust",
+            "criterion",
+            vec![benchmark],
+        )])
     }
 
     fn name(&self) -> &'static str {
@@ -124,27 +134,34 @@ mod tests {
         }"#;
 
         let parser = CriterionParser::new(
-            Uuid::new_v4(),
             "test/repo".to_string(),
             "abc123".to_string(),
+            Some("main".to_string()),
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
         );
 
         assert!(parser.can_parse(json));
 
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets.len(), 1);
 
-        let b = &benchmarks[0];
-        assert_eq!(b.benchmark_name, "my_benchmark");
-        assert_eq!(b.toolset, "criterion");
-        assert_eq!(b.language, "rust");
-        assert!((b.metrics.mean_ns - 1234.5).abs() < f64::EPSILON);
-        assert!((b.metrics.median_ns - 1230.0).abs() < f64::EPSILON);
-        assert!((b.metrics.stddev_ns - 50.0).abs() < f64::EPSILON);
-        assert!((b.metrics.min_ns - 1180.0).abs() < f64::EPSILON);
-        assert!((b.metrics.max_ns - 1280.0).abs() < f64::EPSILON);
-        assert!(b.metrics.ops_per_sec > 0.0);
-        assert_eq!(b.metrics.iterations, 0);
+        let set = &sets[0];
+        assert_eq!(set.metric_name, "wall_time");
+        assert_eq!(set.source.as_ref().unwrap().commit_sha, "abc123");
+        assert_eq!(
+            set.source.as_ref().unwrap().branch,
+            Some("main".to_string())
+        );
+        let b = &set.benchmarks[0];
+        assert_eq!(b.name, "my_benchmark");
+        let stats = b.statistics.as_ref().unwrap();
+        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.unwrap() - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.unwrap() - 1180.0).abs() < f64::EPSILON);
+        assert!((stats.max.unwrap() - 1280.0).abs() < f64::EPSILON);
+        assert_eq!(stats.sample_count, Some(0));
     }
 
     #[test]
@@ -167,13 +184,22 @@ mod tests {
         }"#;
 
         let parser = CriterionParser::new(
-            Uuid::new_v4(),
             "test/repo".to_string(),
             "abc123".to_string(),
+            None,
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
         );
 
-        let benchmarks = parser.parse(json).unwrap();
-        assert_eq!(benchmarks.len(), 1);
-        assert_eq!(benchmarks[0].metrics.iterations, 500);
+        let sets = parser.parse(json).unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(
+            sets[0].benchmarks[0]
+                .statistics
+                .as_ref()
+                .unwrap()
+                .sample_count,
+            Some(500)
+        );
     }
 }
