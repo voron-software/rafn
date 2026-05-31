@@ -1,40 +1,62 @@
-# Rust/Criterion Benchmark Example
+# Rust Criterion Example
 
-This example demonstrates how to use PerfScope with Criterion benchmarks.
+This example shows how `rafn bench` runs a Rust Criterion benchmark project.
 
-## Running the Benchmark
+## Run Locally
 
 ```bash
 cd examples/rust/criterion
-cargo bench
+rafn bench
 ```
 
-This generates results in `target/criterion/`.
+`rafn bench` detects `Cargo.toml`, runs `cargo bench`, parses Criterion output from
+`target/criterion/`, saves a local snapshot in `.rafn/snapshots/`, and compares it
+with the previous local snapshot when one exists.
 
-## Ingesting into PerfScope
-
-After running the benchmark, ingest results using the CLI:
+Pass Criterion or Cargo benchmark arguments after `--`:
 
 ```bash
-# From the criterion example directory
-perfscope ingest --criterion-dir target/criterion
-
-# Or specify repository and commit
-perfscope ingest \
-  --repository myorg/myrepo \
-  --commit-sha $(git rev-parse HEAD) \
-  --criterion-dir target/criterion
+rafn bench -- --bench sample_bench
 ```
 
-## Benchmark Structure
+When running outside a git checkout, provide the repository and commit explicitly:
 
-- `src/lib.rs` - Functions to benchmark
+```bash
+RAFN_REPO=myorg/myrepo RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
+```
+
+Upload the saved snapshot separately:
+
+```bash
+rafn push
+```
+
+## Docker Usage
+
+Build from the repository root so the Dockerfile can compile the local `rafn`
+binary:
+
+```bash
+docker build -f examples/rust/criterion/Dockerfile -t rafn-example-rust .
+docker run --rm -v "$(pwd)/.rafn-rust:/app/.rafn" rafn-example-rust
+```
+
+The mounted `.rafn-rust` directory keeps snapshots between container runs so the
+next run can compare against the previous snapshot. Override the default example
+metadata with environment variables:
+
+```bash
+docker run --rm \
+  -e RAFN_REPO=myorg/myrepo \
+  -e RAFN_COMMIT=$(git rev-parse HEAD) \
+  -v "$(pwd)/.rafn-rust:/app/.rafn" \
+  rafn-example-rust
+```
+
+## Project Structure
+
+- `src/lib.rs` - functions being benchmarked
 - `benches/sample_bench.rs` - Criterion benchmark definitions
 
-## Output Format
-
-Criterion outputs JSON files to `target/criterion/<benchmark>/new/`:
-- `estimates.json` - Statistical estimates (mean, median, std_dev)
-- `benchmark.json` - Benchmark metadata
-
-PerfScope parses these files and extracts the timing data.
+Criterion writes raw results under `target/criterion/`; Rafn stores parsed
+snapshots under `.rafn/snapshots/`.

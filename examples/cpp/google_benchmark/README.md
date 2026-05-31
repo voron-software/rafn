@@ -1,47 +1,64 @@
 # C++ Google Benchmark Example
 
-Fibonacci benchmarks using [Google Benchmark](https://github.com/google/benchmark).
+This example shows how `rafn bench` runs a C++ Google Benchmark project.
 
-## Structure
-
-- `fibonacci_benchmark.cpp` — recursive and iterative Fibonacci benchmarks
-- `CMakeLists.txt` — build configuration using FetchContent to pull Google Benchmark
-- `Dockerfile` — multi-stage build producing a minimal runtime image
-
-## Building locally
+## Run Locally
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-./build/fibonacci_benchmark --benchmark_format=json --benchmark_out=result.json
+cd examples/cpp/google_benchmark
+rafn bench
 ```
 
-## Docker usage
+`rafn bench` detects `CMakeLists.txt`, configures and builds the project with
+CMake, runs the inferred Google Benchmark executable with JSON output enabled,
+saves a local snapshot in `.rafn/snapshots/`, and compares it with the previous
+local snapshot when one exists.
+
+Pass Google Benchmark arguments after `--`:
 
 ```bash
-docker build -t gbench-example .
-docker run --rm -v $(pwd)/results:/results gbench-example
-cat results/gbench-result.json
+rafn bench -- --benchmark_filter=Fibonacci
 ```
 
-## Output format
+When running outside a git checkout, provide the repository and commit explicitly:
 
-Google Benchmark produces JSON with the following structure:
-
-```json
-{
-  "context": { "date": "...", "host_name": "...", ... },
-  "benchmarks": [
-    {
-      "name": "BM_FibonacciRecursive/10",
-      "run_type": "iteration",
-      "iterations": 1234567,
-      "real_time": 42.5,
-      "cpu_time": 42.3,
-      "time_unit": "ns"
-    }
-  ]
-}
+```bash
+RAFN_REPO=myorg/myrepo RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
 ```
 
-This format is parsed by `GoogleBenchmarkParser` in the `ingest` crate.
+Upload the saved snapshot separately:
+
+```bash
+rafn push
+```
+
+## Docker Usage
+
+Build from the repository root so the Dockerfile can compile the local `rafn`
+binary:
+
+```bash
+docker build -f examples/cpp/google_benchmark/Dockerfile -t rafn-example-gbench .
+docker run --rm -v "$(pwd)/.rafn-gbench:/app/.rafn" rafn-example-gbench
+```
+
+The mounted `.rafn-gbench` directory keeps snapshots between container runs so the
+next run can compare against the previous snapshot. Override the default example
+metadata with environment variables:
+
+```bash
+docker run --rm \
+  -e RAFN_REPO=myorg/myrepo \
+  -e RAFN_COMMIT=$(git rev-parse HEAD) \
+  -v "$(pwd)/.rafn-gbench:/app/.rafn" \
+  rafn-example-gbench
+```
+
+## Project Structure
+
+- `fibonacci_benchmark.cpp` - recursive and iterative Fibonacci benchmarks
+- `CMakeLists.txt` - build configuration using FetchContent for Google Benchmark
+- `Dockerfile` - containerized `rafn bench` workflow
+
+Google Benchmark writes raw JSON to `.rafn/bench-results/google-benchmark.json`;
+Rafn stores parsed snapshots under `.rafn/snapshots/`.

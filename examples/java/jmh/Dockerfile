@@ -1,18 +1,28 @@
-FROM maven:3.9-eclipse-temurin-21 AS builder
+FROM rust:1-trixie AS rafn-builder
 
-WORKDIR /build
+WORKDIR /rafn
 
-COPY pom.xml .
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 
-RUN mvn clean package
+RUN apt-get update && apt-get install -y musl-tools && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin rafn
 
-FROM eclipse-temurin:21-jre
+FROM maven:3.9-eclipse-temurin-21
 
 WORKDIR /app
 
-COPY --from=builder /build/target/benchmarks.jar .
+COPY --from=rafn-builder /rafn/target/x86_64-unknown-linux-musl/release/rafn /usr/local/bin/rafn
 
-RUN mkdir -p /results
+COPY examples/java/jmh/pom.xml .
+COPY examples/java/jmh/src ./src
 
-CMD ["java", "-jar", "benchmarks.jar", "-rf", "json", "-rff", "/results/jmh-result.json"]
+# Pre-build to cache Maven dependencies and generate target/benchmarks.jar.
+RUN mvn package
+
+ENV RAFN_REPO=rafn/examples
+ENV RAFN_COMMIT=docker-example
+
+CMD ["rafn", "bench"]

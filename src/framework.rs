@@ -246,8 +246,7 @@ fn cpp_google_benchmark(
                 append_args(
                     vec![
                         "--benchmark_format=json",
-                        "--benchmark_out",
-                        result_file.to_string_lossy().as_ref(),
+                        &format!("--benchmark_out={}", result_file.to_string_lossy()),
                     ],
                     passthrough_args,
                 ),
@@ -371,6 +370,12 @@ mod tests {
         assert_eq!(config.framework, Framework::CppGoogleBenchmark);
         assert_eq!(config.commands.len(), 3);
         assert_eq!(config.commands[2].program, "./build/fibonacci_benchmark");
+        assert!(
+            config.commands[2]
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("--benchmark_out="))
+        );
         assert!(
             config.commands[2]
                 .args

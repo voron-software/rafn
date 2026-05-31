@@ -1,65 +1,65 @@
-# BenchmarkDotNet Example for PerfScope
+# C# BenchmarkDotNet Example
 
-This example demonstrates how to use BenchmarkDotNet with PerfScope to benchmark C# code.
+This example shows how `rafn bench` runs a C# BenchmarkDotNet project.
 
-## Project Structure
-
-- `BenchmarkDotNetExample.csproj`: .NET 8 console project with BenchmarkDotNet 0.14.0
-- `Program.cs`: Fibonacci benchmark implementation (recursive vs iterative)
-- `Dockerfile`: Multi-stage Docker build configuration
-
-## Benchmarks
-
-The example includes two benchmark methods:
-
-1. **RecursiveFibonacci**: Naive recursive implementation
-2. **IterativeFibonacci**: Optimized iterative implementation
-
-Both methods are tested with parameter values: 10, 20, and 30.
-
-## Building and Running
-
-### Build Docker Image
-
-```bash
-docker build -t perfscope-benchmarkdotnet examples/csharp/benchmarkdotnet
-```
-
-### Run Benchmark
-
-```bash
-docker run --rm perfscope-benchmarkdotnet
-```
-
-### Access Results
-
-BenchmarkDotNet generates results in the `BenchmarkDotNet.Artifacts/results/` directory within the container. The full JSON export is written to `*-report-full.json`.
-
-To extract results from a container:
-
-```bash
-# Run with a mounted volume
-docker run --rm -v $(pwd)/results:/app/BenchmarkDotNet.Artifacts/results perfscope-benchmarkdotnet
-```
-
-## JSON Export Format
-
-The benchmark uses `JsonExporter.Full` which includes the Statistics block required by PerfScope. This provides detailed performance metrics including:
-
-- Mean execution time
-- Standard deviation
-- Min/Max values
-- Percentiles (P25, P50, P75, P95, P99)
-- And more
-
-## Local Development
-
-To run without Docker:
+## Run Locally
 
 ```bash
 cd examples/csharp/benchmarkdotnet
-dotnet restore
-dotnet run -c Release
+rafn bench
 ```
 
-Results will be written to `BenchmarkDotNet.Artifacts/results/` in the current directory.
+`rafn bench` detects the BenchmarkDotNet project, runs `dotnet run -c Release`,
+parses the full JSON report from `BenchmarkDotNet.Artifacts/results/`, saves a
+local snapshot in `.rafn/snapshots/`, and compares it with the previous local
+snapshot when one exists.
+
+Pass BenchmarkDotNet arguments after `--`:
+
+```bash
+rafn bench -- --filter '*Fibonacci*'
+```
+
+When running outside a git checkout, provide the repository and commit explicitly:
+
+```bash
+RAFN_REPO=myorg/myrepo RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
+```
+
+Upload the saved snapshot separately:
+
+```bash
+rafn push
+```
+
+## Docker Usage
+
+Build from the repository root so the Dockerfile can compile the local `rafn`
+binary:
+
+```bash
+docker build -f examples/csharp/benchmarkdotnet/Dockerfile -t rafn-example-bdn .
+docker run --rm -v "$(pwd)/.rafn-bdn:/app/.rafn" rafn-example-bdn
+```
+
+The mounted `.rafn-bdn` directory keeps snapshots between container runs so the
+next run can compare against the previous snapshot. Override the default example
+metadata with environment variables:
+
+```bash
+docker run --rm \
+  -e RAFN_REPO=myorg/myrepo \
+  -e RAFN_COMMIT=$(git rev-parse HEAD) \
+  -v "$(pwd)/.rafn-bdn:/app/.rafn" \
+  rafn-example-bdn
+```
+
+## Project Structure
+
+- `BenchmarkDotNetExample.csproj` - .NET 8 project with BenchmarkDotNet
+- `Program.cs` - Fibonacci benchmark implementation
+- `Dockerfile` - containerized `rafn bench` workflow
+
+BenchmarkDotNet writes raw full JSON reports under
+`BenchmarkDotNet.Artifacts/results/`; Rafn stores parsed snapshots under
+`.rafn/snapshots/`.
