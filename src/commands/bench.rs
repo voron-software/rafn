@@ -6,6 +6,7 @@
 use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::config::{Config, RepoConfig};
@@ -37,14 +38,6 @@ pub struct BenchCommand {
     #[arg(long)]
     no_fail: bool,
 
-    /// Verbose output
-    #[arg(short, long)]
-    verbose: bool,
-
-    /// Quiet mode — suppress output except errors
-    #[arg(short, long)]
-    quiet: bool,
-
     /// Arguments passed to the detected benchmark framework command
     #[arg(last = true)]
     args: Vec<String>,
@@ -61,27 +54,21 @@ impl BenchCommand {
 
         let framework_config = framework::detect_framework(&self.args)?;
 
-        if !self.quiet {
-            println!(
-                "Detected {} benchmark framework",
-                framework_config.framework
-            );
-        }
+        info!(
+            "Detected {} benchmark framework",
+            framework_config.framework
+        );
 
         ensure_result_dir(&framework_config.results_strategy)?;
 
         let mut bench_exit = 0;
         for command in &framework_config.commands {
-            if !self.quiet {
-                println!("Running: {}", command.display());
-            }
-            let result = runner::run_benchmark(command, self.verbose)?;
+            info!("Running: {}", command.display());
+            let result = runner::run_benchmark(command)?;
             bench_exit = result.exit_status.code().unwrap_or(1);
 
             if !result.exit_status.success() {
-                if !self.quiet {
-                    eprintln!("Benchmark command exited with code {bench_exit}");
-                }
+                error!("Benchmark command exited with code {bench_exit}");
                 break;
             }
         }
@@ -92,15 +79,11 @@ impl BenchCommand {
         )?;
 
         if discovered.is_empty() {
-            if !self.quiet {
-                eprintln!("No benchmark results found");
-            }
+            error!("No benchmark results found");
             std::process::exit(if bench_exit == 0 { 1 } else { bench_exit });
         }
 
-        if !self.quiet {
-            println!("Found {} benchmark result(s)", discovered.len());
-        }
+        info!("Found {} benchmark result(s)", discovered.len());
 
         let (repository, commit, _branch) =
             git::GitInfo::resolve(self.repo, self.commit, self.branch);
@@ -118,15 +101,11 @@ impl BenchCommand {
                 Ok(p) => match p.parse(&json) {
                     Ok(mut parsed) => benchmarks.append(&mut parsed),
                     Err(e) => {
-                        if !self.quiet {
-                            eprintln!("Warning: Failed to parse {}: {e}", bench.name);
-                        }
+                        warn!("Failed to parse {}: {e}", bench.name);
                     }
                 },
                 Err(e) => {
-                    if !self.quiet {
-                        eprintln!("Warning: No parser for {}: {e}", bench.name);
-                    }
+                    warn!("No parser for {}: {e}", bench.name);
                 }
             }
         }
@@ -134,9 +113,7 @@ impl BenchCommand {
         // Save the snapshot.
         let local_store = store::LocalBackend::default();
         local_store.save(&commit, &benchmarks)?;
-        if !self.quiet {
-            println!("Snapshot saved for commit {commit}");
-        }
+        info!("Snapshot saved for commit {commit}");
 
         // Compare against the previous snapshot and show regressions.
         let prev = local_store.previous_before(&commit)?;
@@ -144,23 +121,17 @@ impl BenchCommand {
 
         match prev {
             None => {
-                if !self.quiet {
-                    println!("No previous snapshot found — skipping regression check.");
-                }
+                info!("No previous snapshot found — skipping regression check.");
             }
             Some(prev_benches) => {
                 let rows = comparison::compare(&prev_benches, &benchmarks);
                 if rows.is_empty() {
-                    if !self.quiet {
-                        println!("No common benchmarks with previous snapshot.");
-                    }
+                    info!("No common benchmarks with previous snapshot.");
                 } else {
-                    if !self.quiet {
-                        comparison::print_table(&rows);
-                    }
+                    comparison::print_table(&rows);
                     regressed = comparison::has_regressions(&rows, threshold);
-                    if regressed && !self.quiet {
-                        eprintln!("✗ Regression detected (threshold: {threshold:.1}%)");
+                    if regressed {
+                        error!("✗ Regression detected (threshold: {threshold:.1}%)");
                     }
                 }
             }

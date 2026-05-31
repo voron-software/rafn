@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use clap::Args;
+use tracing::info;
 
 use crate::comparison;
 use crate::proto::Benchmark;
@@ -52,21 +53,17 @@ impl CompareCommand {
         let backend = store::selected_backend(repo, api_url)?;
 
         if backend.is_remote() {
-            println!("Comparing commits:");
-            println!("  Base: {base_sha}");
-            println!("  Head: {head_sha}");
-            println!();
+            info!("Comparing commits: base={base_sha}, head={head_sha}");
         }
 
         let base = backend.benchmarks_for_commit(&base_sha).await?;
         if backend.is_remote() {
-            println!("Fetched {} benchmarks from base commit", base.len());
+            info!("Fetched {} benchmarks from base commit", base.len());
         }
 
         let head = backend.benchmarks_for_commit(&head_sha).await?;
         if backend.is_remote() {
-            println!("Fetched {} benchmarks from head commit", head.len());
-            println!();
+            info!("Fetched {} benchmarks from head commit", head.len());
         }
 
         output_results(format, base, head)

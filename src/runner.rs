@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
+use tracing::{info, warn};
 
 use crate::framework::ProcessCommand;
 
@@ -15,7 +16,7 @@ pub struct RunResult {
 }
 
 /// Run a benchmark command, streaming output in real-time.
-pub fn run_benchmark(command: &ProcessCommand, verbose: bool) -> Result<RunResult> {
+pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
     let mut child = Command::new(&command.program)
         .args(&command.args)
         .current_dir(&command.current_dir)
@@ -27,17 +28,14 @@ pub fn run_benchmark(command: &ProcessCommand, verbose: bool) -> Result<RunResul
     let stdout_pipe = child.stdout.take().unwrap();
     let stderr_pipe = child.stderr.take().unwrap();
 
-    // Stream stdout in a separate thread
-    let stdout_verbose = verbose;
+    // Stream stdout in a separate thread.
     let stdout_handle = std::thread::spawn(move || {
         let reader = BufReader::new(stdout_pipe);
         let mut captured = String::new();
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    if stdout_verbose {
-                        println!("{}", line);
-                    }
+                    info!("{line}");
                     captured.push_str(&line);
                     captured.push('\n');
                 }
@@ -47,17 +45,14 @@ pub fn run_benchmark(command: &ProcessCommand, verbose: bool) -> Result<RunResul
         captured
     });
 
-    // Stream stderr in a separate thread
-    let stderr_verbose = verbose;
+    // Stream stderr in a separate thread.
     let stderr_handle = std::thread::spawn(move || {
         let reader = BufReader::new(stderr_pipe);
         let mut captured = String::new();
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    if stderr_verbose {
-                        eprintln!("{}", line);
-                    }
+                    warn!("{line}");
                     captured.push_str(&line);
                     captured.push('\n');
                 }

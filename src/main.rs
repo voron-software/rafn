@@ -4,6 +4,7 @@ use rafn::commands::{
     bench::BenchCommand, bisect::BisectCommand, compare::CompareCommand, config::ConfigCommand,
     push::PushCommand, trend::TrendCommand,
 };
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "rafn")]
@@ -37,6 +38,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -47,4 +50,14 @@ async fn main() -> Result<()> {
         Commands::Bisect(cmd) => cmd.execute().await,
         Commands::Config(cmd) => cmd.execute().await,
     }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
 }

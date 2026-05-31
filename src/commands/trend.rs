@@ -9,6 +9,7 @@ use clap::Args;
 use colored::Colorize;
 use std::collections::HashMap;
 use tabled::Table;
+use tracing::info;
 
 use crate::store::{self, Backend, TrendDataPoint, TrendQuery};
 
@@ -49,9 +50,8 @@ impl TrendCommand {
             let name = self.name.clone().ok_or_else(|| anyhow::anyhow!(
                 "Benchmark name is required for the remote backend. Use --name or switch to backend = \"local\""
             ))?;
-            println!("Fetching trend data for benchmark: {}", name.cyan());
-            println!("Repository: {}", backend.repository().unwrap_or_default());
-            println!();
+            info!("Fetching trend data for benchmark: {}", name.cyan());
+            info!("Repository: {}", backend.repository().unwrap_or_default());
         }
 
         let data_points = backend

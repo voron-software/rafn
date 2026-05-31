@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use clap::Args;
+use tracing::{error, info, warn};
 
 use crate::config::{Backend, RepoConfig};
 use crate::git;
@@ -28,10 +29,6 @@ pub struct PushCommand {
     /// gRPC server URL (overrides rafn.toml and user config)
     #[arg(long, env = "RAFN_GRPC_URL")]
     grpc_url: Option<String>,
-
-    /// Quiet mode — suppress output except errors
-    #[arg(short, long)]
-    quiet: bool,
 }
 
 impl PushCommand {
@@ -39,9 +36,7 @@ impl PushCommand {
         let repo_config = RepoConfig::load()?;
 
         if repo_config.backend == Backend::Local {
-            if !self.quiet {
-                println!("Backend is set to \"local\" — nothing to push.");
-            }
+            info!("Backend is set to \"local\" — nothing to push.");
             return Ok(());
         }
 
@@ -66,18 +61,14 @@ impl PushCommand {
         };
 
         if commits.is_empty() {
-            if !self.quiet {
-                println!("No snapshots found to push.");
-            }
+            info!("No snapshots found to push.");
             return Ok(());
         }
 
-        if !self.quiet {
-            if self.dry_run {
-                println!("Dry run — snapshots will not be submitted.");
-            }
-            println!("Pushing to {}", remote.grpc_url());
-        };
+        if self.dry_run {
+            info!("Dry run — snapshots will not be submitted.");
+        }
+        info!("Pushing to {}", remote.grpc_url());
 
         let mut client = if self.dry_run {
             None
@@ -90,43 +81,33 @@ impl PushCommand {
             let benchmarks = match local_store.load(commit)? {
                 Some(b) => b,
                 None => {
-                    if !self.quiet {
-                        eprintln!("Warning: No snapshot found for commit {commit}, skipping");
-                    }
+                    warn!("No snapshot found for commit {commit}, skipping");
                     continue;
                 }
             };
 
-            if !self.quiet {
-                print!(
-                    "  Pushing snapshot for {commit} ({} benchmarks)... ",
-                    benchmarks.len()
-                );
-            }
+            info!(
+                "Pushing snapshot for {commit} ({} benchmarks)",
+                benchmarks.len()
+            );
 
             if let Some(ref mut c) = client {
                 match c.submit(benchmarks).await {
                     Ok(count) => {
                         total_submitted += count;
-                        if !self.quiet {
-                            println!("ok ({count} ingested)");
-                        }
+                        info!("Submitted snapshot for {commit} ({count} ingested)");
                     }
                     Err(e) => {
-                        if !self.quiet {
-                            println!("failed");
-                        }
-                        eprintln!("Error pushing {commit}: {e}");
+                        error!("Error pushing {commit}: {e}");
                     }
                 }
-            } else if !self.quiet {
-                // dry_run
-                println!("skipped (dry run)");
+            } else {
+                info!("Skipped snapshot for {commit} (dry run)");
             }
         }
 
-        if !self.quiet && !self.dry_run {
-            println!("\nTotal benchmarks submitted: {total_submitted}");
+        if !self.dry_run {
+            info!("Total benchmarks submitted: {total_submitted}");
         }
 
         Ok(())
