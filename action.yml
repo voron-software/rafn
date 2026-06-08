@@ -129,6 +129,8 @@ runs:
         INPUT_ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
+        set -f
         # shellcheck disable=SC2206
         args=(${INPUT_ARGS})
+        set +f
         "${RAFN_PATH}" "${INPUT_COMMAND}" "${args[@]}"
