@@ -1,5 +1,5 @@
-name: Setup Rafn
-description: Download the rafn CLI from GitHub Releases and add it to PATH.
+name: Run Rafn
+description: Download the rafn CLI from GitHub Releases and run it.
 
 inputs:
   version:
@@ -16,6 +16,18 @@ inputs:
     default: ''
   install-dir:
     description: Directory where rafn should be installed.
+    required: false
+    default: ''
+  command:
+    description: Rafn subcommand to invoke, such as bench, push, trend, compare, bisect, or config.
+    required: false
+    default: bench
+  args:
+    description: Additional arguments passed to the rafn subcommand.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory to run the rafn command in, such as a benchmark project within a monorepo.
     required: false
     default: ''
 
@@ -107,3 +119,18 @@ runs:
         cp "${destination}" "${link}"
         echo "${install_dir}" >> "${GITHUB_PATH}"
         echo "path=${link}" >> "${GITHUB_OUTPUT}"
+
+    - name: Run rafn
+      shell: bash
+      working-directory: ${{ inputs.working-directory || github.workspace }}
+      env:
+        RAFN_PATH: ${{ steps.install.outputs.path }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        set -f
+        # shellcheck disable=SC2206
+        args=(${INPUT_ARGS})
+        set +f
+        "${RAFN_PATH}" "${INPUT_COMMAND}" "${args[@]}"
