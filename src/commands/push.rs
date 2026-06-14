@@ -25,10 +25,6 @@ pub struct PushCommand {
     /// Parse and validate but do not submit
     #[arg(long)]
     dry_run: bool,
-
-    /// gRPC server URL (overrides rafn.toml and user config)
-    #[arg(long, env = "RAFN_GRPC_URL")]
-    grpc_url: Option<String>,
 }
 
 impl PushCommand {
@@ -41,7 +37,7 @@ impl PushCommand {
         }
 
         let local_store = store::local_backend(&repo_config);
-        let remote = store::remote_backend_for_push(repo_config, self.grpc_url.clone());
+        let remote = store::remote_backend_for_push(repo_config);
 
         // Collect the commits to push.
         let commits: Vec<String> = if self.all {

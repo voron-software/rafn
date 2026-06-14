@@ -21,21 +21,14 @@ pub struct BackendConfig {
     pub repo_config: RepoConfig,
     pub user_config: Config,
     pub repo: Option<String>,
-    pub grpc_url: Option<String>,
 }
 
 impl BackendConfig {
-    pub fn new(
-        repo_config: RepoConfig,
-        user_config: Config,
-        repo: Option<String>,
-        grpc_url: Option<String>,
-    ) -> Self {
+    pub fn new(repo_config: RepoConfig, user_config: Config, repo: Option<String>) -> Self {
         Self {
             repo_config,
             user_config,
             repo,
-            grpc_url,
         }
     }
 }
@@ -101,12 +94,12 @@ impl Backend for SelectedBackend {
     }
 }
 
-pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
+pub fn selected_backend(repo: Option<String>) -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
     match repo_config.backend.backend_type {
         BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
         BackendType::Cloud => {
-            let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
+            let config = BackendConfig::new(repo_config, Config::load()?, repo);
             Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
         }
     }
@@ -122,12 +115,11 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
         .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
-pub fn remote_backend_for_push(repo_config: RepoConfig, grpc_url: Option<String>) -> RemoteBackend {
+pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
     RemoteBackend::for_push(BackendConfig::new(
         repo_config,
         Config::load().unwrap_or_default(),
         None,
-        grpc_url,
     ))
 }
 

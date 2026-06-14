@@ -50,9 +50,7 @@ impl RemoteBackend {
 }
 
 fn resolved_grpc_url(config: &BackendConfig) -> String {
-    config.grpc_url.clone().unwrap_or_else(|| {
-        EffectiveConfig::merge(&config.repo_config, &config.user_config).cloud_api_url
-    })
+    EffectiveConfig::merge(&config.repo_config, &config.user_config).cloud_api_url
 }
 
 fn repository_ref(repository: &str) -> RepositoryReference {
