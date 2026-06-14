@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
-use crate::config::{Backend as ConfigBackend, Config, RepoConfig};
+use crate::config::{BackendType, Config, RepoConfig};
 use crate::proto::pb::BenchmarkSet;
 
 pub mod local;
@@ -21,21 +21,14 @@ pub struct BackendConfig {
     pub repo_config: RepoConfig,
     pub user_config: Config,
     pub repo: Option<String>,
-    pub grpc_url: Option<String>,
 }
 
 impl BackendConfig {
-    pub fn new(
-        repo_config: RepoConfig,
-        user_config: Config,
-        repo: Option<String>,
-        grpc_url: Option<String>,
-    ) -> Self {
+    pub fn new(repo_config: RepoConfig, user_config: Config, repo: Option<String>) -> Self {
         Self {
             repo_config,
             user_config,
             repo,
-            grpc_url,
         }
     }
 }
@@ -101,12 +94,12 @@ impl Backend for SelectedBackend {
     }
 }
 
-pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
+pub fn selected_backend(repo: Option<String>) -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
-    match repo_config.backend {
-        ConfigBackend::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
-        ConfigBackend::Remote => {
-            let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
+    match repo_config.backend.backend_type {
+        BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
+        BackendType::Cloud => {
+            let config = BackendConfig::new(repo_config, Config::load()?, repo);
             Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
         }
     }
@@ -122,12 +115,11 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
         .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
-pub fn remote_backend_for_push(repo_config: RepoConfig, grpc_url: Option<String>) -> RemoteBackend {
+pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
     RemoteBackend::for_push(BackendConfig::new(
         repo_config,
         Config::load().unwrap_or_default(),
         None,
-        grpc_url,
     ))
 }
 
@@ -147,13 +139,15 @@ pub(crate) fn require_repository(config: &BackendConfig) -> Result<String> {
     config
         .repo
         .clone()
+        .or_else(|| config.repo_config.project_repo().map(str::to_string))
         .or_else(|| config.user_config.default_repo.clone())
-        .context("Repository not specified. Use --repo or configure default_repo")
+        .context("Repository not specified. Use --repo, set [project].repo in rafn.toml, or configure default_repo")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProjectConfig;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
 
     fn make_set() -> BenchmarkSet {
@@ -186,5 +180,57 @@ mod tests {
 
         // Snapshot lands under the discovered root, not the process cwd.
         assert!(dir.path().join(".rafn/snapshots/abc123.pb").exists());
+    }
+
+    fn config_with_repo_and_default(
+        project_repo: Option<&str>,
+        default_repo: Option<&str>,
+        cli_repo: Option<&str>,
+    ) -> BackendConfig {
+        BackendConfig::new(
+            RepoConfig {
+                project: project_repo.map(|repo| ProjectConfig {
+                    repo: Some(repo.to_string()),
+                }),
+                ..Default::default()
+            },
+            Config {
+                default_repo: default_repo.map(str::to_string),
+                ..Default::default()
+            },
+            cli_repo.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn require_repository_prefers_cli_flag() {
+        let config = config_with_repo_and_default(
+            Some("from-project-config"),
+            Some("from-default-repo"),
+            Some("from-cli"),
+        );
+        assert_eq!(require_repository(&config).unwrap(), "from-cli");
+    }
+
+    #[test]
+    fn require_repository_falls_back_to_project_repo() {
+        let config = config_with_repo_and_default(
+            Some("from-project-config"),
+            Some("from-default-repo"),
+            None,
+        );
+        assert_eq!(require_repository(&config).unwrap(), "from-project-config");
+    }
+
+    #[test]
+    fn require_repository_falls_back_to_user_default_repo() {
+        let config = config_with_repo_and_default(None, Some("from-default-repo"), None);
+        assert_eq!(require_repository(&config).unwrap(), "from-default-repo");
+    }
+
+    #[test]
+    fn require_repository_errors_when_unset() {
+        let config = config_with_repo_and_default(None, None, None);
+        assert!(require_repository(&config).is_err());
     }
 }

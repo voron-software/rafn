@@ -1,13 +1,13 @@
 //! `rafn push` — upload local snapshots to the remote gRPC service.
 //!
-//! When `backend = "local"` is set in `rafn.toml`, this command is a no-op
-//! (snapshots are intended to stay local only).
+//! When `[backend] type = "local"` is set in `rafn.toml`, this command is a
+//! no-op (snapshots are intended to stay local only).
 
 use anyhow::{Result, bail};
 use clap::Args;
 use tracing::{error, info, warn};
 
-use crate::config::{Backend, RepoConfig};
+use crate::config::{BackendType, RepoConfig};
 use crate::git;
 use crate::store;
 
@@ -25,23 +25,19 @@ pub struct PushCommand {
     /// Parse and validate but do not submit
     #[arg(long)]
     dry_run: bool,
-
-    /// gRPC server URL (overrides rafn.toml and user config)
-    #[arg(long, env = "RAFN_GRPC_URL")]
-    grpc_url: Option<String>,
 }
 
 impl PushCommand {
     pub async fn execute(self) -> Result<()> {
         let repo_config = RepoConfig::load()?;
 
-        if repo_config.backend == Backend::Local {
+        if repo_config.backend.backend_type == BackendType::Local {
             info!("Backend is set to \"local\" — nothing to push.");
             return Ok(());
         }
 
         let local_store = store::local_backend(&repo_config);
-        let remote = store::remote_backend_for_push(repo_config, self.grpc_url.clone());
+        let remote = store::remote_backend_for_push(repo_config);
 
         // Collect the commits to push.
         let commits: Vec<String> = if self.all {
