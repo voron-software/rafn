@@ -12,10 +12,11 @@ use self::parsers::benchmarkdotnet::BenchmarkDotNetParser;
 use self::parsers::criterion::CriterionParser;
 use self::parsers::google_benchmark::GoogleBenchmarkParser;
 use self::parsers::jmh::JmhParser;
+use crate::config::RepositoryRef;
 
 pub fn get_parser(
     format: &str,
-    repository: String,
+    repository: RepositoryRef,
     commit_sha: String,
     branch: Option<String>,
     run_uuid: String,

@@ -3,33 +3,32 @@
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 use std::process::Command;
+use url::Url;
+
+use crate::config::RepositoryRef;
 
 /// Git repository information.
 pub struct GitInfo {
-    pub repository: Option<String>,
+    pub repository: Option<RepositoryRef>,
     pub commit_sha: Option<String>,
     pub branch: Option<String>,
 }
 
 impl GitInfo {
     /// Merge CLI-provided overrides with autodetected git info.
-    /// Returns resolved (repository, commit, branch) with errors for missing required fields.
+    /// Returns resolved (commit, branch) with an error for a missing commit.
     pub fn resolve(
-        repo: Option<String>,
         commit: Option<String>,
         branch: Option<String>,
-    ) -> (Result<String>, Result<String>, Option<String>) {
+    ) -> (Result<String>, Option<String>) {
         let git_info = detect_git_info();
 
-        let repository = repo
-            .or(git_info.repository)
-            .context("Could not detect repository. Use --repo or set PERFSCOPE_REPO");
         let commit_sha = commit
             .or(git_info.commit_sha)
-            .context("Could not detect commit. Use --commit or set PERFSCOPE_COMMIT");
+            .context("Could not detect commit. Use --commit or set RAFN_COMMIT");
         let branch_resolved = branch.or(git_info.branch);
 
-        (repository, commit_sha, branch_resolved)
+        (commit_sha, branch_resolved)
     }
 }
 
@@ -42,7 +41,9 @@ pub fn detect_git_info() -> GitInfo {
     }
 }
 
-fn detect_repository() -> Option<String> {
+/// Detect the repository identity from the `origin` remote URL, parsing the
+/// host as `forge` and the remaining path as `owner/repository`.
+pub fn detect_repository() -> Option<RepositoryRef> {
     let output = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .output()
@@ -95,30 +96,34 @@ fn detect_branch() -> Option<String> {
     }
 }
 
-fn extract_repo_from_url(url: &str) -> Option<String> {
-    // Handle SSH format: git@github.com:owner/repo.git
-    if url.starts_with("git@") {
-        let parts: Vec<&str> = url.split(':').collect();
-        if parts.len() == 2 {
-            return Some(parts[1].trim_end_matches(".git").to_string());
-        }
-    }
+/// Parse a git remote URL into a [`RepositoryRef`], taking the host as
+/// `forge` and the remaining path as `owner/repository`.
+fn extract_repo_from_url(url: &str) -> Option<RepositoryRef> {
+    // Git's SCP-like syntax (`[user@]host:path`, e.g.
+    // `git@github.com:owner/repo.git`) isn't a URL; rewrite it to the
+    // equivalent `ssh://` form so it can go through the same parser as
+    // `https://`/`ssh://` remotes.
+    let normalized = if url.contains("://") {
+        url.to_string()
+    } else {
+        let (host_part, path_part) = url.split_once(':')?;
+        format!("ssh://{host_part}/{path_part}")
+    };
 
-    // Handle HTTPS format: https://github.com/owner/repo.git
-    if url.starts_with("https://") || url.starts_with("http://") {
-        let path: String = url
-            .split('/')
-            .skip(3)
-            .collect::<Vec<_>>()
-            .join("/")
-            .trim_end_matches(".git")
-            .to_string();
-        if !path.is_empty() {
-            return Some(path);
-        }
-    }
+    let parsed = Url::parse(&normalized).ok()?;
+    let forge = parsed.host_str()?.to_string();
 
-    None
+    let path = parsed
+        .path()
+        .trim_start_matches('/')
+        .trim_end_matches(".git");
+    let (owner, repository) = path.split_once('/')?;
+
+    Some(RepositoryRef {
+        forge,
+        owner: owner.to_string(),
+        repository: repository.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -129,7 +134,11 @@ mod tests {
     fn test_extract_repo_ssh() {
         assert_eq!(
             extract_repo_from_url("git@github.com:owner/repo.git"),
-            Some("owner/repo".to_string())
+            Some(RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
         );
     }
 
@@ -137,7 +146,11 @@ mod tests {
     fn test_extract_repo_https() {
         assert_eq!(
             extract_repo_from_url("https://github.com/owner/repo.git"),
-            Some("owner/repo".to_string())
+            Some(RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
         );
     }
 
@@ -145,7 +158,35 @@ mod tests {
     fn test_extract_repo_https_no_git_suffix() {
         assert_eq!(
             extract_repo_from_url("https://github.com/owner/repo"),
-            Some("owner/repo".to_string())
+            Some(RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_https_with_credentials() {
+        assert_eq!(
+            extract_repo_from_url("https://x-access-token@github.com/owner/repo.git"),
+            Some(RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_gitlab_ssh() {
+        assert_eq!(
+            extract_repo_from_url("git@gitlab.com:owner/repo.git"),
+            Some(RepositoryRef {
+                forge: "gitlab.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
         );
     }
 }

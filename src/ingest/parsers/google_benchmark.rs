@@ -1,3 +1,4 @@
+use crate::config::RepositoryRef;
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
 use crate::proto::benchmark::{
@@ -9,7 +10,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub struct GoogleBenchmarkParser {
-    repository: String,
+    repository: RepositoryRef,
     commit_sha: String,
     branch: Option<String>,
     run_uuid: String,
@@ -33,7 +34,7 @@ struct GBenchEntry {
 
 impl GoogleBenchmarkParser {
     pub fn new(
-        repository: String,
+        repository: RepositoryRef,
         commit_sha: String,
         branch: Option<String>,
         run_uuid: String,
@@ -145,7 +146,11 @@ mod tests {
 
     fn make_parser() -> GoogleBenchmarkParser {
         GoogleBenchmarkParser::new(
-            "test/repo".into(),
+            RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "test".to_string(),
+                repository: "repo".to_string(),
+            },
             "abc123".into(),
             None,
             "run-1".into(),

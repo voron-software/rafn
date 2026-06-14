@@ -1,4 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use rafn::config::RepositoryRef;
 use rafn::proto::benchmark::{
     benchmark_record, benchmark_set, metric_statistics, milliseconds_to_ns, seconds_to_ns,
 };
@@ -6,6 +7,11 @@ use std::hint::black_box;
 
 fn benchmark_set_benchmark(c: &mut Criterion) {
     let statistics = metric_statistics(1000.0, 900.0, 100.0, 800.0, 1200.0, Some(50));
+    let repository = RepositoryRef {
+        forge: "github.com".to_string(),
+        owner: "owner".to_string(),
+        repository: "test-repo".to_string(),
+    };
 
     c.bench_function("benchmark_set_build", |b| {
         b.iter(|| {
@@ -14,7 +20,7 @@ fn benchmark_set_benchmark(c: &mut Criterion) {
                 black_box(statistics),
             );
             benchmark_set(
-                black_box("owner/test-repo"),
+                black_box(&repository),
                 black_box("abc123def456"),
                 None,
                 black_box("run-1".to_string()),

@@ -3,85 +3,67 @@
 use anyhow::{Context, Result};
 use tonic::transport::Channel;
 
-use crate::proto::benchmark::{split_repository, timestamp_to_millis};
+use crate::config::{EffectiveConfig, RepositoryRef};
+use crate::proto::benchmark::timestamp_to_millis;
 use crate::proto::pb::{
     BenchmarkSet, GetBenchmarkTrendRequest, GetCommitBenchmarksRequest, GetRepositoryTrendsRequest,
     PushResultsRequest, RepositoryReference, benchmark_service_client::BenchmarkServiceClient,
 };
 
-use super::{Backend, BackendConfig, TrendDataPoint, TrendQuery, require_repository};
-
-const DEFAULT_GRPC_URL: &str = "http://localhost:50051";
+use super::{Backend, TrendDataPoint, TrendQuery, require_repository};
 
 #[derive(Clone)]
 pub struct RemoteBackend {
-    grpc_url: String,
-    repository: String,
+    endpoint: String,
+    repository: Option<RepositoryRef>,
 }
 
 impl RemoteBackend {
-    pub fn from_config(config: BackendConfig) -> Result<Self> {
-        let grpc_url = resolved_grpc_url(&config);
-        let repository = require_repository(&config)?;
+    /// Build a backend for read operations (trend/compare), which require a
+    /// resolved repository identity.
+    pub fn from_effective(effective: EffectiveConfig) -> Result<Self> {
+        let repository = require_repository(&effective)?;
         Ok(Self {
-            grpc_url,
-            repository,
+            endpoint: effective.endpoint,
+            repository: Some(repository),
         })
     }
 
-    pub fn for_push(config: BackendConfig) -> Self {
-        let grpc_url = resolved_grpc_url(&config);
+    /// Build a backend for `rafn push`, which reads repository identity from
+    /// each snapshot's `SourceInformation` rather than from config.
+    pub fn for_push(effective: EffectiveConfig) -> Self {
         Self {
-            grpc_url,
-            repository: String::new(),
+            endpoint: effective.endpoint,
+            repository: None,
         }
     }
 
-    pub fn repository(&self) -> &str {
-        &self.repository
+    pub fn repository(&self) -> Option<&RepositoryRef> {
+        self.repository.as_ref()
     }
 
-    pub fn grpc_url(&self) -> &str {
-        &self.grpc_url
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     pub async fn connect_push(&self) -> Result<BenchmarkClient> {
-        BenchmarkClient::connect(self.grpc_url.clone()).await
+        BenchmarkClient::connect(self.endpoint.clone()).await
     }
 }
 
-fn resolved_grpc_url(config: &BackendConfig) -> String {
-    config
-        .grpc_url
-        .clone()
-        .or_else(|| config.repo_config.grpc_url().map(str::to_string))
-        .unwrap_or_else(|| {
-            if config.user_config.grpc_url != DEFAULT_GRPC_URL {
-                config.user_config.grpc_url.clone()
-            } else {
-                DEFAULT_GRPC_URL.to_string()
-            }
-        })
-}
-
-fn repository_ref(repository: &str) -> RepositoryReference {
-    let (owner, repo) = split_repository(repository);
-    RepositoryReference {
-        forge: "github.com".to_string(),
-        owner,
-        repository: repo,
-    }
+fn repository_ref(repository: Option<&RepositoryRef>) -> Option<RepositoryReference> {
+    repository.map(RepositoryRef::to_proto)
 }
 
 impl Backend for RemoteBackend {
     async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>> {
-        let mut client = BenchmarkServiceClient::connect(self.grpc_url.clone())
+        let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
             .await
             .context("Failed to connect to gRPC service")?;
 
         let response = client
             .get_commit_benchmarks(GetCommitBenchmarksRequest {
-                repository: Some(repository_ref(&self.repository)),
+                repository: repository_ref(self.repository.as_ref()),
                 commit_sha: commit_sha.to_string(),
                 metric_name: Some("wall_time".to_string()),
                 benchmark_name: None,
@@ -93,14 +75,14 @@ impl Backend for RemoteBackend {
     }
 
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>> {
-        let mut client = BenchmarkServiceClient::connect(self.grpc_url.clone())
+        let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
             .await
             .context("Failed to connect to gRPC service")?;
 
         let mut data_points: Vec<TrendDataPoint> = if let Some(name) = query.benchmark_name {
             let response = client
                 .get_benchmark_trend(GetBenchmarkTrendRequest {
-                    repository: Some(repository_ref(&self.repository)),
+                    repository: repository_ref(self.repository.as_ref()),
                     benchmark_name: name.clone(),
                     metric_name: "wall_time".to_string(),
                     limit: Some(query.limit),
@@ -129,7 +111,7 @@ impl Backend for RemoteBackend {
         } else {
             let response = client
                 .get_repository_trends(GetRepositoryTrendsRequest {
-                    repository: Some(repository_ref(&self.repository)),
+                    repository: repository_ref(self.repository.as_ref()),
                     metric_name: Some("wall_time".to_string()),
                     limit: Some(query.limit),
                 })
@@ -163,8 +145,8 @@ pub struct BenchmarkClient {
 }
 
 impl BenchmarkClient {
-    pub async fn connect(grpc_url: String) -> Result<Self> {
-        let inner = BenchmarkServiceClient::connect(grpc_url)
+    pub async fn connect(endpoint: String) -> Result<Self> {
+        let inner = BenchmarkServiceClient::connect(endpoint)
             .await
             .context("Failed to connect to gRPC service")?;
         Ok(Self { inner })

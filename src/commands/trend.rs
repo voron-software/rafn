@@ -1,8 +1,8 @@
 //! `rafn trend` — display benchmark history over time.
 //!
-//! With `backend = "local"` (rafn.toml) the history is read from the local
-//! snapshot store. With `backend = "remote"` (default) the remote gRPC service
-//! is queried.
+//! With `[backend] type = "local"` (rafn.toml) the history is read from the
+//! local snapshot store. With `[backend] type = "cloud"` (default) the rafn
+//! cloud service is queried.
 
 use anyhow::Result;
 use clap::Args;
@@ -15,10 +15,6 @@ use crate::store::{self, Backend, TrendDataPoint, TrendQuery};
 
 #[derive(Args)]
 pub struct TrendCommand {
-    /// Repository name
-    #[arg(short, long)]
-    repo: Option<String>,
-
     /// Benchmark name. When omitted, all benchmarks are shown.
     #[arg(short, long)]
     name: Option<String>,
@@ -30,10 +26,6 @@ pub struct TrendCommand {
     /// Limit number of data points (remote backend only)
     #[arg(short, long, default_value = "50")]
     limit: u32,
-
-    /// gRPC URL (overrides user config; remote backend only)
-    #[arg(long)]
-    grpc_url: Option<String>,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -44,7 +36,7 @@ pub enum OutputFormat {
 
 impl TrendCommand {
     pub async fn execute(self) -> Result<()> {
-        let backend = store::selected_backend(self.repo.clone(), self.grpc_url.clone())?;
+        let backend = store::selected_backend()?;
 
         if backend.is_remote() {
             if let Some(ref name) = self.name {
@@ -52,7 +44,9 @@ impl TrendCommand {
             } else {
                 info!("Fetching trend data for all benchmarks");
             }
-            info!("Repository: {}", backend.repository().unwrap_or_default());
+            if let Some(repository) = backend.repository() {
+                info!("Repository: {repository}");
+            }
         }
 
         let data_points = backend

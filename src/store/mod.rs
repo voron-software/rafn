@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
-use crate::config::{Backend as ConfigBackend, Config, RepoConfig};
+use crate::config::{BackendType, Config, EffectiveConfig, RepoConfig, RepositoryRef};
 use crate::proto::pb::BenchmarkSet;
 
 pub mod local;
@@ -15,30 +15,6 @@ pub mod remote;
 
 pub use local::LocalBackend;
 pub use remote::RemoteBackend;
-
-#[derive(Debug, Clone)]
-pub struct BackendConfig {
-    pub repo_config: RepoConfig,
-    pub user_config: Config,
-    pub repo: Option<String>,
-    pub grpc_url: Option<String>,
-}
-
-impl BackendConfig {
-    pub fn new(
-        repo_config: RepoConfig,
-        user_config: Config,
-        repo: Option<String>,
-        grpc_url: Option<String>,
-    ) -> Self {
-        Self {
-            repo_config,
-            user_config,
-            repo,
-            grpc_url,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TrendQuery {
@@ -77,10 +53,10 @@ impl SelectedBackend {
         matches!(self, Self::Remote(_))
     }
 
-    pub fn repository(&self) -> Option<&str> {
+    pub fn repository(&self) -> Option<&RepositoryRef> {
         match self {
             Self::Local(_) => None,
-            Self::Remote(backend) => Some(backend.repository()),
+            Self::Remote(backend) => backend.repository(),
         }
     }
 }
@@ -101,14 +77,18 @@ impl Backend for SelectedBackend {
     }
 }
 
-pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
+/// Select and build the configured backend by loading `rafn.toml` and the
+/// user config and resolving the [`EffectiveConfig`].
+pub fn selected_backend() -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
-    match repo_config.backend {
-        ConfigBackend::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
-        ConfigBackend::Remote => {
-            let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
-            Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
-        }
+    let user_config = Config::load()?;
+    let effective = EffectiveConfig::resolve(&repo_config, &user_config);
+
+    match effective.backend_type {
+        BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
+        BackendType::Cloud => Ok(SelectedBackend::Remote(RemoteBackend::from_effective(
+            effective,
+        )?)),
     }
 }
 
@@ -122,13 +102,10 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
         .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
-pub fn remote_backend_for_push(repo_config: RepoConfig, grpc_url: Option<String>) -> RemoteBackend {
-    RemoteBackend::for_push(BackendConfig::new(
-        repo_config,
-        Config::load().unwrap_or_default(),
-        None,
-        grpc_url,
-    ))
+pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
+    let user_config = Config::load().unwrap_or_default();
+    let effective = EffectiveConfig::resolve(&repo_config, &user_config);
+    RemoteBackend::for_push(effective)
 }
 
 pub fn format_duration_trend(ns: &f64) -> String {
@@ -143,12 +120,14 @@ pub fn format_timestamp(ts: &i64) -> String {
         .to_string()
 }
 
-pub(crate) fn require_repository(config: &BackendConfig) -> Result<String> {
-    config
-        .repo
-        .clone()
-        .or_else(|| config.user_config.default_repo.clone())
-        .context("Repository not specified. Use --repo or configure default_repo")
+/// Repository identity for the remote backend: `[project.repository]` from
+/// `rafn.toml`, falling back to git auto-detection (both already applied by
+/// [`EffectiveConfig::resolve`]).
+pub(crate) fn require_repository(effective: &EffectiveConfig) -> Result<RepositoryRef> {
+    effective.repository.clone().context(
+        "Repository not specified. Set [project.repository] in rafn.toml, \
+         or run inside a git repository with a configured remote.",
+    )
 }
 
 #[cfg(test)]
@@ -156,9 +135,17 @@ mod tests {
     use super::*;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
 
+    fn test_repository() -> RepositoryRef {
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "test".to_string(),
+            repository: "repo".to_string(),
+        }
+    }
+
     fn make_set() -> BenchmarkSet {
         benchmark_set(
-            "test/repo",
+            &test_repository(),
             "abc123",
             None,
             "run-1".to_string(),
@@ -186,5 +173,26 @@ mod tests {
 
         // Snapshot lands under the discovered root, not the process cwd.
         assert!(dir.path().join(".rafn/snapshots/abc123.pb").exists());
+    }
+
+    fn effective_with_repository(repository: Option<RepositoryRef>) -> EffectiveConfig {
+        EffectiveConfig {
+            backend_type: BackendType::Cloud,
+            endpoint: "http://localhost:50051".to_string(),
+            repository,
+            bench_threshold: 5.0,
+        }
+    }
+
+    #[test]
+    fn require_repository_returns_resolved_repository() {
+        let effective = effective_with_repository(Some(test_repository()));
+        assert_eq!(require_repository(&effective).unwrap(), test_repository());
+    }
+
+    #[test]
+    fn require_repository_errors_when_unset() {
+        let effective = effective_with_repository(None);
+        assert!(require_repository(&effective).is_err());
     }
 }

@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::pb;
+use crate::config::RepositoryRef;
 
 pub fn toolset_enum(s: &str) -> pb::Toolset {
     match s {
@@ -33,13 +34,6 @@ pub fn language_enum(s: &str) -> pb::Language {
         "javascript" => pb::Language::Javascript,
         "typescript" => pb::Language::Typescript,
         _ => pb::Language::Unspecified,
-    }
-}
-
-pub fn split_repository(repository: &str) -> (String, String) {
-    match repository.split_once('/') {
-        Some((owner, repo)) => (owner.to_string(), repo.to_string()),
-        None => (String::new(), repository.to_string()),
     }
 }
 
@@ -105,7 +99,7 @@ pub fn benchmark_record(name: String, statistics: pb::MetricStatistics) -> pb::B
 
 #[allow(clippy::too_many_arguments)]
 pub fn benchmark_set(
-    repository: &str,
+    repository: &RepositoryRef,
     commit_sha: &str,
     branch: Option<String>,
     run_uuid: String,
@@ -114,13 +108,12 @@ pub fn benchmark_set(
     toolset: &str,
     benchmarks: Vec<pb::Benchmark>,
 ) -> pb::BenchmarkSet {
-    let (owner, repo) = split_repository(repository);
     pb::BenchmarkSet {
         run_uuid,
         source: Some(pb::SourceInformation {
-            forge: "github.com".to_string(),
-            owner,
-            repository: repo,
+            forge: repository.forge.clone(),
+            owner: repository.owner.clone(),
+            repository: repository.repository.clone(),
             commit_sha: commit_sha.to_string(),
             commit_graph: None,
             branch,
@@ -170,17 +163,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_repository_handles_no_slash() {
-        let (owner, repo) = split_repository("standalone");
-        assert_eq!(owner, "");
-        assert_eq!(repo, "standalone");
-    }
+    fn benchmark_set_populates_source_from_repository_ref() {
+        let repository = RepositoryRef {
+            forge: "gitlab.com".to_string(),
+            owner: "acme".to_string(),
+            repository: "perf-suite".to_string(),
+        };
 
-    #[test]
-    fn split_repository_splits_owner_repo() {
-        let (owner, repo) = split_repository("acme/perf-suite");
-        assert_eq!(owner, "acme");
-        assert_eq!(repo, "perf-suite");
+        let set = benchmark_set(
+            &repository,
+            "abc123",
+            Some("main".to_string()),
+            "run-1".to_string(),
+            prost_types::Timestamp::default(),
+            "rust",
+            "criterion",
+            Vec::new(),
+        );
+
+        let source = set.source.unwrap();
+        assert_eq!(source.forge, "gitlab.com");
+        assert_eq!(source.owner, "acme");
+        assert_eq!(source.repository, "perf-suite");
+        assert_eq!(source.commit_sha, "abc123");
+        assert_eq!(source.branch, Some("main".to_string()));
     }
 
     #[test]

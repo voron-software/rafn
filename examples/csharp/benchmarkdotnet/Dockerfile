@@ -22,7 +22,8 @@ COPY examples/csharp/benchmarkdotnet/Program.cs .
 # Pre-build to cache NuGet dependencies and compile the benchmark project.
 RUN dotnet restore && dotnet build -c Release --no-restore
 
-ENV RAFN_REPO=rafn/examples
+ENV RAFN_PROJECT__REPOSITORY__OWNER=rafn
+ENV RAFN_PROJECT__REPOSITORY__REPOSITORY=examples
 ENV RAFN_COMMIT=docker-example
 
 CMD ["rafn", "bench"]

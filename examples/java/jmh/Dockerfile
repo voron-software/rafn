@@ -22,7 +22,8 @@ COPY examples/java/jmh/src ./src
 # Pre-build to cache Maven dependencies and generate target/benchmarks.jar.
 RUN mvn package
 
-ENV RAFN_REPO=rafn/examples
+ENV RAFN_PROJECT__REPOSITORY__OWNER=rafn
+ENV RAFN_PROJECT__REPOSITORY__REPOSITORY=examples
 ENV RAFN_COMMIT=docker-example
 
 CMD ["rafn", "bench"]

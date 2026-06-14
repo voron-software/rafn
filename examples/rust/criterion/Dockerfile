@@ -23,7 +23,8 @@ COPY examples/rust/criterion/benches ./benches
 # Pre-build to cache benchmark dependencies.
 RUN cargo bench --no-run
 
-ENV RAFN_REPO=rafn/examples
+ENV RAFN_PROJECT__REPOSITORY__OWNER=rafn
+ENV RAFN_PROJECT__REPOSITORY__REPOSITORY=examples
 ENV RAFN_COMMIT=docker-example
 
 CMD ["rafn", "bench"]
