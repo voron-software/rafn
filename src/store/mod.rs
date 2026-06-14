@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
-use crate::config::{BackendType, Config, RepoConfig};
+use crate::config::{BackendType, Config, EffectiveConfig, RepoConfig, RepositoryRef};
 use crate::proto::pb::BenchmarkSet;
 
 pub mod local;
@@ -15,23 +15,6 @@ pub mod remote;
 
 pub use local::LocalBackend;
 pub use remote::RemoteBackend;
-
-#[derive(Debug, Clone)]
-pub struct BackendConfig {
-    pub repo_config: RepoConfig,
-    pub user_config: Config,
-    pub repo: Option<String>,
-}
-
-impl BackendConfig {
-    pub fn new(repo_config: RepoConfig, user_config: Config, repo: Option<String>) -> Self {
-        Self {
-            repo_config,
-            user_config,
-            repo,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TrendQuery {
@@ -70,10 +53,10 @@ impl SelectedBackend {
         matches!(self, Self::Remote(_))
     }
 
-    pub fn repository(&self) -> Option<&str> {
+    pub fn repository(&self) -> Option<&RepositoryRef> {
         match self {
             Self::Local(_) => None,
-            Self::Remote(backend) => Some(backend.repository()),
+            Self::Remote(backend) => backend.repository(),
         }
     }
 }
@@ -94,14 +77,18 @@ impl Backend for SelectedBackend {
     }
 }
 
-pub fn selected_backend(repo: Option<String>) -> Result<SelectedBackend> {
+/// Select and build the configured backend by loading `rafn.toml` and the
+/// user config and resolving the [`EffectiveConfig`].
+pub fn selected_backend() -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
-    match repo_config.backend.backend_type {
+    let user_config = Config::load()?;
+    let effective = EffectiveConfig::resolve(&repo_config, &user_config);
+
+    match effective.backend_type {
         BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
-        BackendType::Cloud => {
-            let config = BackendConfig::new(repo_config, Config::load()?, repo);
-            Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
-        }
+        BackendType::Cloud => Ok(SelectedBackend::Remote(RemoteBackend::from_effective(
+            effective,
+        )?)),
     }
 }
 
@@ -116,11 +103,9 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
 }
 
 pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
-    RemoteBackend::for_push(BackendConfig::new(
-        repo_config,
-        Config::load().unwrap_or_default(),
-        None,
-    ))
+    let user_config = Config::load().unwrap_or_default();
+    let effective = EffectiveConfig::resolve(&repo_config, &user_config);
+    RemoteBackend::for_push(effective)
 }
 
 pub fn format_duration_trend(ns: &f64) -> String {
@@ -135,24 +120,32 @@ pub fn format_timestamp(ts: &i64) -> String {
         .to_string()
 }
 
-pub(crate) fn require_repository(config: &BackendConfig) -> Result<String> {
-    config
-        .repo
-        .clone()
-        .or_else(|| config.repo_config.project_repo().map(str::to_string))
-        .or_else(|| config.user_config.default_repo.clone())
-        .context("Repository not specified. Use --repo, set [project].repo in rafn.toml, or configure default_repo")
+/// Repository identity for the remote backend: `[project.repository]` from
+/// `rafn.toml`, falling back to git auto-detection (both already applied by
+/// [`EffectiveConfig::resolve`]).
+pub(crate) fn require_repository(effective: &EffectiveConfig) -> Result<RepositoryRef> {
+    effective.repository.clone().context(
+        "Repository not specified. Set [project.repository] in rafn.toml, \
+         or run inside a git repository with a configured remote.",
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProjectConfig;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+
+    fn test_repository() -> RepositoryRef {
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "test".to_string(),
+            repository: "repo".to_string(),
+        }
+    }
 
     fn make_set() -> BenchmarkSet {
         benchmark_set(
-            "test/repo",
+            &test_repository(),
             "abc123",
             None,
             "run-1".to_string(),
@@ -182,55 +175,24 @@ mod tests {
         assert!(dir.path().join(".rafn/snapshots/abc123.pb").exists());
     }
 
-    fn config_with_repo_and_default(
-        project_repo: Option<&str>,
-        default_repo: Option<&str>,
-        cli_repo: Option<&str>,
-    ) -> BackendConfig {
-        BackendConfig::new(
-            RepoConfig {
-                project: project_repo.map(|repo| ProjectConfig {
-                    repo: Some(repo.to_string()),
-                }),
-                ..Default::default()
-            },
-            Config {
-                default_repo: default_repo.map(str::to_string),
-                ..Default::default()
-            },
-            cli_repo.map(str::to_string),
-        )
+    fn effective_with_repository(repository: Option<RepositoryRef>) -> EffectiveConfig {
+        EffectiveConfig {
+            backend_type: BackendType::Cloud,
+            endpoint: "http://localhost:50051".to_string(),
+            repository,
+            bench_threshold: 5.0,
+        }
     }
 
     #[test]
-    fn require_repository_prefers_cli_flag() {
-        let config = config_with_repo_and_default(
-            Some("from-project-config"),
-            Some("from-default-repo"),
-            Some("from-cli"),
-        );
-        assert_eq!(require_repository(&config).unwrap(), "from-cli");
-    }
-
-    #[test]
-    fn require_repository_falls_back_to_project_repo() {
-        let config = config_with_repo_and_default(
-            Some("from-project-config"),
-            Some("from-default-repo"),
-            None,
-        );
-        assert_eq!(require_repository(&config).unwrap(), "from-project-config");
-    }
-
-    #[test]
-    fn require_repository_falls_back_to_user_default_repo() {
-        let config = config_with_repo_and_default(None, Some("from-default-repo"), None);
-        assert_eq!(require_repository(&config).unwrap(), "from-default-repo");
+    fn require_repository_returns_resolved_repository() {
+        let effective = effective_with_repository(Some(test_repository()));
+        assert_eq!(require_repository(&effective).unwrap(), test_repository());
     }
 
     #[test]
     fn require_repository_errors_when_unset() {
-        let config = config_with_repo_and_default(None, None, None);
-        assert!(require_repository(&config).is_err());
+        let effective = effective_with_repository(None);
+        assert!(require_repository(&effective).is_err());
     }
 }

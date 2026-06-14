@@ -162,13 +162,22 @@ impl Backend for LocalBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RepositoryRef;
     use crate::proto::benchmark::{
         benchmark_record, benchmark_set, metric_statistics, statistic_mean_ns,
     };
 
+    fn test_repository() -> RepositoryRef {
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "test".to_string(),
+            repository: "repo".to_string(),
+        }
+    }
+
     fn make_set(name: &str, mean_ns: f64) -> BenchmarkSet {
         benchmark_set(
-            "test/repo",
+            &test_repository(),
             "abc123",
             None,
             "run-1".to_string(),

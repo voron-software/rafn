@@ -15,10 +15,6 @@ use crate::store::{self, Backend, TrendDataPoint, TrendQuery};
 
 #[derive(Args)]
 pub struct TrendCommand {
-    /// Repository name
-    #[arg(short, long)]
-    repo: Option<String>,
-
     /// Benchmark name. When omitted, all benchmarks are shown.
     #[arg(short, long)]
     name: Option<String>,
@@ -40,7 +36,7 @@ pub enum OutputFormat {
 
 impl TrendCommand {
     pub async fn execute(self) -> Result<()> {
-        let backend = store::selected_backend(self.repo.clone())?;
+        let backend = store::selected_backend()?;
 
         if backend.is_remote() {
             if let Some(ref name) = self.name {
@@ -48,7 +44,9 @@ impl TrendCommand {
             } else {
                 info!("Fetching trend data for all benchmarks");
             }
-            info!("Repository: {}", backend.repository().unwrap_or_default());
+            if let Some(repository) = backend.repository() {
+                info!("Repository: {repository}");
+            }
         }
 
         let data_points = backend

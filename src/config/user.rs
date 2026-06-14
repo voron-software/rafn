@@ -1,34 +1,38 @@
+//! User-level configuration, loaded from `~/.config/rafn/config.toml`.
+//!
+//! Loaded via the `config` crate so values layer file < env
+//! (`RAFN_CLOUD__API_URL` etc.), with compiled defaults as the final
+//! fallback. `api_key` is intentionally not a field here: it is always
+//! sourced from the `RAFN_API_KEY` environment variable, never persisted to
+//! this file.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
-use uuid::Uuid;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    #[serde(default = "default_grpc_url")]
-    pub grpc_url: String,
-
-    pub db_url: Option<String>,
-
-    pub tenant_id: Option<Uuid>,
-
-    pub default_repo: Option<String>,
-}
-
-fn default_grpc_url() -> String {
+fn default_api_url() -> String {
     "http://localhost:50051".to_string()
 }
 
-impl Default for Config {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UserCloudConfig {
+    #[serde(default = "default_api_url")]
+    pub api_url: String,
+}
+
+impl Default for UserCloudConfig {
     fn default() -> Self {
         Self {
-            grpc_url: default_grpc_url(),
-            db_url: None,
-            tenant_id: None,
-            default_repo: None,
+            api_url: default_api_url(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Config {
+    #[serde(default)]
+    pub cloud: UserCloudConfig,
 }
 
 impl Config {
@@ -43,20 +47,34 @@ impl Config {
             .join("config.toml"))
     }
 
+    /// Load from `path` (if it exists) layered with the given environment
+    /// source, falling back to compiled defaults.
+    fn load_from_with_env(path: &Path, env: config::Environment) -> Result<Self> {
+        let built = config::Config::builder()
+            .add_source(config::File::from(path).required(false))
+            .add_source(env)
+            .build()
+            .context("Failed to build configuration")?;
+
+        built
+            .try_deserialize()
+            .context("Failed to parse configuration")
+    }
+
+    /// Load from `path` (if it exists) layered with `RAFN_`-prefixed
+    /// environment variables (double underscore as the nesting separator),
+    /// falling back to compiled defaults.
+    fn load_from(path: &Path) -> Result<Self> {
+        Self::load_from_with_env(
+            path,
+            config::Environment::with_prefix("RAFN")
+                .prefix_separator("_")
+                .separator("__"),
+        )
+    }
+
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
-
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
-        let config: Config = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-
-        Ok(config)
+        Self::load_from(&Self::config_path()?)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -78,38 +96,14 @@ impl Config {
 
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
-            "grpc_url" => Some(self.grpc_url.clone()),
-            "db_url" => self.db_url.clone(),
-            "tenant_id" => self.tenant_id.map(|id| id.to_string()),
-            "default_repo" => self.default_repo.clone(),
+            "cloud.api_url" => Some(self.cloud.api_url.clone()),
             _ => None,
         }
     }
 
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "grpc_url" => self.grpc_url = value.to_string(),
-            "db_url" => {
-                self.db_url = if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
-            }
-            "tenant_id" => {
-                self.tenant_id = if value.is_empty() {
-                    None
-                } else {
-                    Some(Uuid::parse_str(value).context("Invalid UUID")?)
-                };
-            }
-            "default_repo" => {
-                self.default_repo = if value.is_empty() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
-            }
+            "cloud.api_url" => self.cloud.api_url = value.to_string(),
             _ => anyhow::bail!("Unknown configuration key: {}", key),
         }
         Ok(())
@@ -123,36 +117,65 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.grpc_url, "http://localhost:50051");
-        assert!(config.db_url.is_none());
-        assert!(config.tenant_id.is_none());
-        assert!(config.default_repo.is_none());
+        assert_eq!(config.cloud.api_url, "http://localhost:50051");
     }
 
     #[test]
     fn test_get_set() {
         let mut config = Config::default();
         config
-            .set("grpc_url", "http://grpc.example.com:50051")
+            .set("cloud.api_url", "http://grpc.example.com:50051")
             .unwrap();
         assert_eq!(
-            config.get("grpc_url").unwrap(),
+            config.get("cloud.api_url").unwrap(),
             "http://grpc.example.com:50051"
         );
-
-        config.set("default_repo", "myrepo").unwrap();
-        assert_eq!(config.get("default_repo").unwrap(), "myrepo");
-    }
-
-    #[test]
-    fn test_invalid_tenant_id() {
-        let mut config = Config::default();
-        assert!(config.set("tenant_id", "not-a-uuid").is_err());
     }
 
     #[test]
     fn test_unknown_key() {
         let mut config = Config::default();
         assert!(config.set("unknown_key", "value").is_err());
+        assert!(config.get("unknown_key").is_none());
+    }
+
+    #[test]
+    fn test_load_missing_file_returns_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let config = Config::load_from(&path).unwrap();
+        assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn test_load_reads_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[cloud]\napi_url = \"https://file.example.com\"\n").unwrap();
+
+        let config = Config::load_from(&path).unwrap();
+        assert_eq!(config.cloud.api_url, "https://file.example.com");
+    }
+
+    #[test]
+    fn test_env_override_flows_through_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Inject a fake environment rather than mutating real process env
+        // vars, so this test can't race with others reading RAFN_* vars.
+        let mut env = config::Map::new();
+        env.insert(
+            "RAFN_CLOUD__API_URL".to_string(),
+            "https://env.example.com".to_string(),
+        );
+        let env_source = config::Environment::with_prefix("RAFN")
+            .prefix_separator("_")
+            .separator("__")
+            .source(Some(env));
+
+        let config = Config::load_from_with_env(&path, env_source).unwrap();
+        assert_eq!(config.cloud.api_url, "https://env.example.com");
     }
 }

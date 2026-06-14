@@ -64,7 +64,7 @@ impl PushCommand {
         if self.dry_run {
             info!("Dry run — snapshots will not be submitted.");
         }
-        info!("Pushing to {}", remote.grpc_url());
+        info!("Pushing to {}", remote.endpoint());
 
         let mut client = if self.dry_run {
             None

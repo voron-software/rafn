@@ -1,3 +1,4 @@
+use crate::config::RepositoryRef;
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
 use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
@@ -5,7 +6,7 @@ use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 
 pub struct CriterionParser {
-    repository: String,
+    repository: RepositoryRef,
     commit_sha: String,
     branch: Option<String>,
     run_uuid: String,
@@ -46,7 +47,7 @@ struct ConfidenceInterval {
 
 impl CriterionParser {
     pub fn new(
-        repository: String,
+        repository: RepositoryRef,
         commit_sha: String,
         branch: Option<String>,
         run_uuid: String,
@@ -106,6 +107,14 @@ impl BenchmarkParser for CriterionParser {
 mod tests {
     use super::*;
 
+    fn test_repository() -> RepositoryRef {
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "test".to_string(),
+            repository: "repo".to_string(),
+        }
+    }
+
     #[test]
     fn test_criterion_parser() {
         let json = r#"{
@@ -134,7 +143,7 @@ mod tests {
         }"#;
 
         let parser = CriterionParser::new(
-            "test/repo".to_string(),
+            test_repository(),
             "abc123".to_string(),
             Some("main".to_string()),
             "run-1".to_string(),
@@ -184,7 +193,7 @@ mod tests {
         }"#;
 
         let parser = CriterionParser::new(
-            "test/repo".to_string(),
+            test_repository(),
             "abc123".to_string(),
             None,
             "run-1".to_string(),

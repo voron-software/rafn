@@ -22,10 +22,6 @@ pub struct CompareCommand {
     #[arg(long)]
     head: String,
 
-    /// Repository name (required for remote backend)
-    #[arg(short, long)]
-    repo: Option<String>,
-
     /// Output format
     #[arg(short, long, default_value = "table")]
     format: OutputFormat,
@@ -42,11 +38,10 @@ impl CompareCommand {
         let CompareCommand {
             base: base_sha,
             head: head_sha,
-            repo,
             format,
         } = self;
 
-        let backend = store::selected_backend(repo)?;
+        let backend = store::selected_backend()?;
 
         if backend.is_remote() {
             info!("Comparing commits: base={base_sha}, head={head_sha}");

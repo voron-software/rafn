@@ -9,16 +9,12 @@ use std::path::PathBuf;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::config::{Config, RepoConfig};
+use crate::config::{Config, EffectiveConfig, RepoConfig};
 use crate::proto::benchmark::timestamp_now;
 use crate::{comparison, discovery, framework, git, ingest, runner, store};
 
 #[derive(Args)]
 pub struct BenchCommand {
-    /// Repository name (auto-detected from git if not specified)
-    #[arg(long, env = "RAFN_REPO")]
-    repo: Option<String>,
-
     /// Commit SHA (auto-detected from git if not specified)
     #[arg(long, env = "RAFN_COMMIT")]
     commit: Option<String>,
@@ -46,12 +42,12 @@ pub struct BenchCommand {
 
 impl BenchCommand {
     pub async fn execute(self) -> Result<()> {
-        let _user_config = Config::load().unwrap_or_default();
+        let user_config = Config::load()?;
         let repo_config = RepoConfig::load()?;
+        let effective = EffectiveConfig::resolve(&repo_config, &user_config);
 
-        let threshold = self
-            .threshold
-            .unwrap_or_else(|| repo_config.bench_threshold());
+        let threshold = self.threshold.unwrap_or(effective.bench_threshold);
+        let repository = store::require_repository(&effective)?;
 
         let framework_config = framework::detect_framework(&self.args)?;
 
@@ -85,9 +81,7 @@ impl BenchCommand {
 
         info!("Found {} benchmark result(s)", discovered.len());
 
-        let (repository, commit, branch) =
-            git::GitInfo::resolve(self.repo, self.commit, self.branch);
-        let repository = repository?;
+        let (commit, branch) = git::GitInfo::resolve(self.commit, self.branch);
         let commit = commit?;
         let run_uuid = Uuid::new_v4().to_string();
         let run_started_at = timestamp_now();

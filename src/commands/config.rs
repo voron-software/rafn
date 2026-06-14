@@ -18,7 +18,7 @@ pub enum ConfigSubcommand {
     Show,
     /// Set a configuration value
     Set {
-        /// Configuration key (grpc_url, db_url, tenant_id, default_repo)
+        /// Configuration key (cloud.api_url)
         key: String,
         /// Configuration value
         value: String,
@@ -39,46 +39,14 @@ impl ConfigCommand {
                 let path = Config::config_path()?;
                 println!("Configuration file initialized at: {}", path.display());
                 println!("\nDefault values:");
-                println!(
-                    "  db_url: {}",
-                    config.db_url.unwrap_or_else(|| "(not set)".to_string())
-                );
-                println!(
-                    "  tenant_id: {}",
-                    config
-                        .tenant_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "(not set)".to_string())
-                );
-                println!(
-                    "  default_repo: {}",
-                    config
-                        .default_repo
-                        .unwrap_or_else(|| "(not set)".to_string())
-                );
+                println!("  cloud.api_url: {}", config.cloud.api_url);
             }
             ConfigSubcommand::Show => {
                 let config = Config::load()?;
                 let path = Config::config_path()?;
                 println!("Configuration file: {}", path.display());
                 println!("\nCurrent values:");
-                println!(
-                    "  db_url: {}",
-                    config.db_url.unwrap_or_else(|| "(not set)".to_string())
-                );
-                println!(
-                    "  tenant_id: {}",
-                    config
-                        .tenant_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "(not set)".to_string())
-                );
-                println!(
-                    "  default_repo: {}",
-                    config
-                        .default_repo
-                        .unwrap_or_else(|| "(not set)".to_string())
-                );
+                println!("  cloud.api_url: {}", config.cloud.api_url);
             }
             ConfigSubcommand::Set { key, value } => {
                 let mut config = Config::load()?;

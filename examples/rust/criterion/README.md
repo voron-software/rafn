@@ -22,7 +22,8 @@ rafn bench -- --bench sample_bench
 When running outside a git checkout, provide the repository and commit explicitly:
 
 ```bash
-RAFN_REPO=myorg/myrepo RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
+RAFN_PROJECT__REPOSITORY__OWNER=myorg RAFN_PROJECT__REPOSITORY__REPOSITORY=myrepo \
+  RAFN_COMMIT=$(git rev-parse HEAD) rafn bench
 ```
 
 Upload the saved snapshot separately:
@@ -47,7 +48,8 @@ metadata with environment variables:
 
 ```bash
 docker run --rm \
-  -e RAFN_REPO=myorg/myrepo \
+  -e RAFN_PROJECT__REPOSITORY__OWNER=myorg \
+  -e RAFN_PROJECT__REPOSITORY__REPOSITORY=myrepo \
   -e RAFN_COMMIT=$(git rev-parse HEAD) \
   -v "$(pwd)/.rafn-rust:/app/.rafn" \
   rafn-example-rust

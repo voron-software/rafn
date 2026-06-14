@@ -1,3 +1,4 @@
+use crate::config::RepositoryRef;
 use crate::ingest::error::Result;
 use crate::ingest::parser::BenchmarkParser;
 use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
@@ -5,7 +6,7 @@ use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 
 pub struct BenchmarkDotNetParser {
-    repository: String,
+    repository: RepositoryRef,
     commit_sha: String,
     branch: Option<String>,
     run_uuid: String,
@@ -50,7 +51,7 @@ struct Statistics {
 
 impl BenchmarkDotNetParser {
     pub fn new(
-        repository: String,
+        repository: RepositoryRef,
         commit_sha: String,
         branch: Option<String>,
         run_uuid: String,
@@ -130,9 +131,17 @@ impl BenchmarkParser for BenchmarkDotNetParser {
 mod tests {
     use super::*;
 
+    fn test_repository() -> RepositoryRef {
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "test".to_string(),
+            repository: "repo".to_string(),
+        }
+    }
+
     fn make_parser() -> BenchmarkDotNetParser {
         BenchmarkDotNetParser::new(
-            "test/repo".into(),
+            test_repository(),
             "abc123".into(),
             None,
             "run-1".into(),

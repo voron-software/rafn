@@ -4,10 +4,16 @@
 //! the filesystem root, stopping at the first match — the same pattern used
 //! by `.gitignore`, `Cargo.toml`, `pyproject.toml`, etc. No git repository is
 //! required for discovery.
+//!
+//! Loaded via the `config` crate so values layer file < env
+//! (`RAFN_BACKEND__CLOUD__API_URL`, `RAFN_PROJECT__REPOSITORY__OWNER`, etc.),
+//! with compiled defaults as the final fallback.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+use super::RepositoryRef;
 
 /// Which storage backend to use for snapshot reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -42,9 +48,9 @@ pub struct BackendSection {
 /// `[project]` section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
-    /// Repository identifier in `owner/repo` form, used to resolve the
-    /// remote backend's `RepositoryReference` without passing `--repo`.
-    pub repo: Option<String>,
+    /// Repository identity, used to resolve the remote backend's
+    /// `RepositoryReference`/`SourceInformation`.
+    pub repository: Option<RepositoryRef>,
 }
 
 /// `[bench]` section.
@@ -75,16 +81,14 @@ pub struct RepoConfig {
 
 impl RepoConfig {
     /// Load `rafn.toml` by walking from `cwd` toward the filesystem root,
-    /// stopping at the first match. Returns a default config when no
+    /// stopping at the first match, layered with `RAFN_`-prefixed
+    /// environment variables. Falls back to compiled defaults when no
     /// `rafn.toml` is found.
     pub fn load() -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let found = find_rafn_toml(&cwd);
 
-        let mut config = match &found {
-            Some(path) => Self::load_from(path)?,
-            None => Self::default(),
-        };
+        let mut config = Self::build(found.as_deref())?;
 
         config.project_root = found
             .as_ref()
@@ -95,12 +99,32 @@ impl RepoConfig {
         Ok(config)
     }
 
-    fn load_from(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {e}", path.display()))?;
-        let config: Self = toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse {}: {e}", path.display()))?;
-        Ok(config)
+    /// Build the layered config from an optional `rafn.toml` path plus the
+    /// given environment source.
+    fn build_with_env(toml_path: Option<&Path>, env: config::Environment) -> Result<Self> {
+        let mut builder = config::Config::builder();
+        if let Some(path) = toml_path {
+            builder = builder.add_source(config::File::from(path).required(false));
+        }
+        builder = builder.add_source(env);
+
+        builder
+            .build()
+            .context("Failed to build configuration")?
+            .try_deserialize()
+            .context("Failed to parse configuration")
+    }
+
+    /// Build the layered config from an optional `rafn.toml` path plus
+    /// `RAFN_`-prefixed environment variables (`__` as the nesting
+    /// separator).
+    fn build(toml_path: Option<&Path>) -> Result<Self> {
+        Self::build_with_env(
+            toml_path,
+            config::Environment::with_prefix("RAFN")
+                .prefix_separator("_")
+                .separator("__"),
+        )
     }
 
     /// Base URL from `[backend.cloud].api_url`, if set.
@@ -111,9 +135,9 @@ impl RepoConfig {
             .and_then(|c| c.api_url.as_deref())
     }
 
-    /// Repository identifier from `[project].repo`, if set.
-    pub fn project_repo(&self) -> Option<&str> {
-        self.project.as_ref().and_then(|p| p.repo.as_deref())
+    /// Repository identity from `[project.repository]`, if set.
+    pub fn project_repository(&self) -> Option<&RepositoryRef> {
+        self.project.as_ref().and_then(|p| p.repository.as_ref())
     }
 
     /// Regression threshold from `[bench].threshold`, defaulting to 5 %.
@@ -199,13 +223,36 @@ api_url = "https://api.rafn.dev"
     }
 
     #[test]
-    fn test_parse_project_repo() {
+    fn test_parse_project_repository() {
         let toml = r#"
-[project]
-repo = "owner/repo"
+[project.repository]
+owner = "acme"
+repository = "perf-suite"
 "#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.project_repo(), Some("owner/repo"));
+        assert_eq!(
+            cfg.project_repository(),
+            Some(&RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "perf-suite".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_project_repository_with_forge() {
+        let toml = r#"
+[project.repository]
+forge = "gitlab.com"
+owner = "acme"
+repository = "perf-suite"
+"#;
+        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.project_repository().map(|r| r.forge.as_str()),
+            Some("gitlab.com")
+        );
     }
 
     #[test]
@@ -232,7 +279,7 @@ type = "local"
 "#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cloud_api_url().is_none());
-        assert!(cfg.project_repo().is_none());
+        assert!(cfg.project_repository().is_none());
         assert_eq!(cfg.bench_threshold(), 5.0);
     }
 
@@ -244,5 +291,70 @@ type = "remote"
 "#;
         let result: std::result::Result<RepoConfig, _> = toml::from_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_with_no_file_uses_defaults() {
+        let cfg = RepoConfig::build(None).unwrap();
+        assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
+        assert!(cfg.project_repository().is_none());
+    }
+
+    #[test]
+    fn test_build_reads_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rafn.toml");
+        fs::write(
+            &path,
+            r#"
+[backend]
+type = "local"
+
+[project.repository]
+owner = "acme"
+repository = "perf-suite"
+"#,
+        )
+        .unwrap();
+
+        let cfg = RepoConfig::build(Some(&path)).unwrap();
+        assert_eq!(cfg.backend.backend_type, BackendType::Local);
+        assert_eq!(
+            cfg.project_repository().map(|r| r.owner.as_str()),
+            Some("acme")
+        );
+    }
+
+    #[test]
+    fn test_env_override_for_project_repository_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rafn.toml");
+        fs::write(
+            &path,
+            r#"
+[project.repository]
+owner = "from-file"
+repository = "perf-suite"
+"#,
+        )
+        .unwrap();
+
+        // Inject a fake environment rather than mutating real process env
+        // vars, so this test can't race with others reading RAFN_* vars.
+        let mut env = config::Map::new();
+        env.insert(
+            "RAFN_PROJECT__REPOSITORY__OWNER".to_string(),
+            "from-env".to_string(),
+        );
+        let env_source = config::Environment::with_prefix("RAFN")
+            .prefix_separator("_")
+            .separator("__")
+            .source(Some(env));
+
+        let cfg = RepoConfig::build_with_env(Some(&path), env_source).unwrap();
+        assert_eq!(
+            cfg.project_repository().map(|r| r.owner.as_str()),
+            Some("from-env")
+        );
     }
 }

@@ -1,4 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use rafn::config::RepositoryRef;
 use rafn::ingest::BenchmarkParser;
 use rafn::ingest::parsers::criterion::CriterionParser;
 use std::hint::black_box;
@@ -54,7 +55,11 @@ fn criterion_parser_benchmark(c: &mut Criterion) {
     }"#;
 
     let parser = CriterionParser::new(
-        "test-repo".to_string(),
+        RepositoryRef {
+            forge: "github.com".to_string(),
+            owner: "owner".to_string(),
+            repository: "test-repo".to_string(),
+        },
         "abc123".to_string(),
         None,
         "run-1".to_string(),

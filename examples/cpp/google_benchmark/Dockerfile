@@ -28,7 +28,8 @@ COPY examples/cpp/google_benchmark/fibonacci_benchmark.cpp .
 # Pre-build to cache Google Benchmark and the example binary.
 RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
 
-ENV RAFN_REPO=rafn/examples
+ENV RAFN_PROJECT__REPOSITORY__OWNER=rafn
+ENV RAFN_PROJECT__REPOSITORY__REPOSITORY=examples
 ENV RAFN_COMMIT=docker-example
 
 CMD ["rafn", "bench"]
