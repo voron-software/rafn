@@ -42,7 +42,9 @@ pub struct BackendSection {
 /// `[project]` section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
-    pub name: Option<String>,
+    /// Repository identifier in `owner/repo` form, used to resolve the
+    /// remote backend's `RepositoryReference` without passing `--repo`.
+    pub repo: Option<String>,
 }
 
 /// `[bench]` section.
@@ -109,9 +111,9 @@ impl RepoConfig {
             .and_then(|c| c.api_url.as_deref())
     }
 
-    /// Project name from `[project].name`, if set.
-    pub fn project_name(&self) -> Option<&str> {
-        self.project.as_ref().and_then(|p| p.name.as_deref())
+    /// Repository identifier from `[project].repo`, if set.
+    pub fn project_repo(&self) -> Option<&str> {
+        self.project.as_ref().and_then(|p| p.repo.as_deref())
     }
 
     /// Regression threshold from `[bench].threshold`, defaulting to 5 %.
@@ -197,13 +199,13 @@ api_url = "https://api.rafn.dev"
     }
 
     #[test]
-    fn test_parse_project_name() {
+    fn test_parse_project_repo() {
         let toml = r#"
 [project]
-name = "my-project"
+repo = "owner/repo"
 "#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.project_name(), Some("my-project"));
+        assert_eq!(cfg.project_repo(), Some("owner/repo"));
     }
 
     #[test]
@@ -230,7 +232,7 @@ type = "local"
 "#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
         assert!(cfg.cloud_api_url().is_none());
-        assert!(cfg.project_name().is_none());
+        assert!(cfg.project_repo().is_none());
         assert_eq!(cfg.bench_threshold(), 5.0);
     }
 
