@@ -1,8 +1,8 @@
 //! `rafn trend` — display benchmark history over time.
 //!
-//! With `backend = "local"` (rafn.toml) the history is read from the local
-//! snapshot store. With `backend = "remote"` (default) the remote gRPC service
-//! is queried.
+//! With `[backend] type = "local"` (rafn.toml) the history is read from the
+//! local snapshot store. With `[backend] type = "cloud"` (default) the rafn
+//! cloud service is queried.
 
 use anyhow::Result;
 use clap::Args;

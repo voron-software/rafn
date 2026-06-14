@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use tonic::transport::Channel;
 
+use crate::config::EffectiveConfig;
 use crate::proto::benchmark::{split_repository, timestamp_to_millis};
 use crate::proto::pb::{
     BenchmarkSet, GetBenchmarkTrendRequest, GetCommitBenchmarksRequest, GetRepositoryTrendsRequest,
@@ -10,8 +11,6 @@ use crate::proto::pb::{
 };
 
 use super::{Backend, BackendConfig, TrendDataPoint, TrendQuery, require_repository};
-
-const DEFAULT_GRPC_URL: &str = "http://localhost:50051";
 
 #[derive(Clone)]
 pub struct RemoteBackend {
@@ -51,17 +50,9 @@ impl RemoteBackend {
 }
 
 fn resolved_grpc_url(config: &BackendConfig) -> String {
-    config
-        .grpc_url
-        .clone()
-        .or_else(|| config.repo_config.grpc_url().map(str::to_string))
-        .unwrap_or_else(|| {
-            if config.user_config.grpc_url != DEFAULT_GRPC_URL {
-                config.user_config.grpc_url.clone()
-            } else {
-                DEFAULT_GRPC_URL.to_string()
-            }
-        })
+    config.grpc_url.clone().unwrap_or_else(|| {
+        EffectiveConfig::merge(&config.repo_config, &config.user_config).cloud_api_url
+    })
 }
 
 fn repository_ref(repository: &str) -> RepositoryReference {

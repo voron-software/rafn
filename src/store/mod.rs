@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
-use crate::config::{Backend as ConfigBackend, Config, RepoConfig};
+use crate::config::{BackendType, Config, RepoConfig};
 use crate::proto::pb::BenchmarkSet;
 
 pub mod local;
@@ -103,9 +103,9 @@ impl Backend for SelectedBackend {
 
 pub fn selected_backend(repo: Option<String>, grpc_url: Option<String>) -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
-    match repo_config.backend {
-        ConfigBackend::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
-        ConfigBackend::Remote => {
+    match repo_config.backend.backend_type {
+        BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
+        BackendType::Cloud => {
             let config = BackendConfig::new(repo_config, Config::load()?, repo, grpc_url);
             Ok(SelectedBackend::Remote(RemoteBackend::from_config(config)?))
         }

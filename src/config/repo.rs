@@ -1,35 +1,48 @@
 //! Repository-local configuration loaded from `rafn.toml`.
 //!
-//! The project root is the git repository root (`git rev-parse --show-toplevel`).
-//! `rafn.toml` is searched from the current directory upward, bounded by the
-//! git root; `rafn` must be run inside a git repository.
+//! `rafn.toml` is discovered by walking up from the current directory toward
+//! the filesystem root, stopping at the first match — the same pattern used
+//! by `.gitignore`, `Cargo.toml`, `pyproject.toml`, etc. No git repository is
+//! required for discovery.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Which storage backend to use for snapshot reads and writes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum Backend {
+pub enum BackendType {
     /// Store and read snapshots from the local `.rafn/` directory.
     Local,
-    /// Push snapshots to and read history from the remote gRPC service.
+    /// Push snapshots to and read history from the rafn cloud service.
     #[default]
-    Remote,
+    Cloud,
 }
 
-/// `[remote.cloud]` section — remote service endpoints.
+/// `[backend.cloud]` section — rafn cloud service endpoint.
+///
+/// `api_key` is intentionally not a field here: it is always sourced from the
+/// `RAFN_API_KEY` environment variable, never from `rafn.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RemoteCloud {
-    /// gRPC server URL for `rafn push`.
-    pub url: Option<String>,
+pub struct CloudConfig {
+    /// Base URL of the rafn cloud API.
+    pub api_url: Option<String>,
 }
 
-/// `[remote]` section.
+/// `[backend]` section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Remote {
-    pub cloud: Option<RemoteCloud>,
+pub struct BackendSection {
+    #[serde(rename = "type", default)]
+    pub backend_type: BackendType,
+
+    pub cloud: Option<CloudConfig>,
+}
+
+/// `[project]` section.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectConfig {
+    pub name: Option<String>,
 }
 
 /// `[bench]` section.
@@ -44,32 +57,39 @@ pub struct BenchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RepoConfig {
     #[serde(default)]
-    pub backend: Backend,
+    pub backend: BackendSection,
 
-    pub remote: Option<Remote>,
+    pub project: Option<ProjectConfig>,
 
     pub bench: Option<BenchConfig>,
 
-    /// Git repository root. Resolved once during [`load`](Self::load) so that
-    /// snapshot storage and other consumers anchor to the git root.
+    /// Directory that anchors snapshot storage and other repo-relative
+    /// state. Resolved once during [`load`](Self::load): the directory
+    /// containing the discovered `rafn.toml`, falling back to the git
+    /// repository root, falling back to the current directory.
     #[serde(skip)]
     pub project_root: Option<PathBuf>,
 }
 
 impl RepoConfig {
-    /// Load `rafn.toml` by walking from `cwd` up to the git root (inclusive).
-    /// Returns a default config when no `rafn.toml` is found. Errors when
-    /// not inside a git repository.
+    /// Load `rafn.toml` by walking from `cwd` toward the filesystem root,
+    /// stopping at the first match. Returns a default config when no
+    /// `rafn.toml` is found.
     pub fn load() -> Result<Self> {
-        let git_root =
-            crate::git::detect_git_root().context("rafn must be run inside a git repository")?;
         let cwd = std::env::current_dir()?;
-        let mut config = if let Some(path) = find_rafn_toml(&cwd, &git_root) {
-            Self::load_from(&path)?
-        } else {
-            Self::default()
+        let found = find_rafn_toml(&cwd);
+
+        let mut config = match &found {
+            Some(path) => Self::load_from(path)?,
+            None => Self::default(),
         };
-        config.project_root = Some(git_root);
+
+        config.project_root = found
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .or_else(crate::git::detect_git_root)
+            .or(Some(cwd));
+
         Ok(config)
     }
 
@@ -81,12 +101,17 @@ impl RepoConfig {
         Ok(config)
     }
 
-    /// gRPC server URL from `[remote.cloud].url`, if set.
-    pub fn grpc_url(&self) -> Option<&str> {
-        self.remote
+    /// Base URL from `[backend.cloud].api_url`, if set.
+    pub fn cloud_api_url(&self) -> Option<&str> {
+        self.backend
+            .cloud
             .as_ref()
-            .and_then(|r| r.cloud.as_ref())
-            .and_then(|c| c.url.as_deref())
+            .and_then(|c| c.api_url.as_deref())
+    }
+
+    /// Project name from `[project].name`, if set.
+    pub fn project_name(&self) -> Option<&str> {
+        self.project.as_ref().and_then(|p| p.name.as_deref())
     }
 
     /// Regression threshold from `[bench].threshold`, defaulting to 5 %.
@@ -95,17 +120,14 @@ impl RepoConfig {
     }
 }
 
-/// Walk up from `start` looking for `rafn.toml`, stopping after `root`
-/// (inclusive). Returns the path to the file if found within those bounds.
-fn find_rafn_toml(start: &Path, root: &Path) -> Option<PathBuf> {
+/// Walk up from `start` looking for `rafn.toml`, stopping at the first match.
+/// Returns `None` once the filesystem root is reached without a match.
+fn find_rafn_toml(start: &Path) -> Option<PathBuf> {
     let mut dir = start;
     loop {
         let candidate = dir.join("rafn.toml");
         if candidate.exists() {
             return Some(candidate);
-        }
-        if dir == root {
-            return None;
         }
         dir = dir.parent()?;
     }
@@ -117,58 +139,71 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn test_find_rafn_toml_at_root() {
+    fn test_find_rafn_toml_at_start() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::write(root.join("rafn.toml"), "").unwrap();
-        assert_eq!(find_rafn_toml(root, root), Some(root.join("rafn.toml")));
+        assert_eq!(find_rafn_toml(root), Some(root.join("rafn.toml")));
     }
 
     #[test]
-    fn test_find_rafn_toml_in_subdir() {
+    fn test_find_rafn_toml_in_ancestor() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let sub = root.join("a").join("b");
         fs::create_dir_all(&sub).unwrap();
         fs::write(root.join("rafn.toml"), "").unwrap();
-        assert_eq!(find_rafn_toml(&sub, root), Some(root.join("rafn.toml")));
+        assert_eq!(find_rafn_toml(&sub), Some(root.join("rafn.toml")));
     }
 
     #[test]
-    fn test_find_rafn_toml_above_root_not_found() {
+    fn test_find_rafn_toml_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let sub = root.join("inner");
+        let sub = dir.path().join("a").join("b");
         fs::create_dir_all(&sub).unwrap();
-        // Place rafn.toml above the root boundary — should not be found.
-        fs::write(root.join("rafn.toml"), "").unwrap();
-        // Use `sub` as both start and root so the walk is bounded to `sub` only.
-        assert_eq!(find_rafn_toml(&sub, &sub), None);
+        // No rafn.toml anywhere in `dir`'s ancestry (assumed for a fresh tempdir).
+        assert_eq!(find_rafn_toml(&sub), None);
     }
 
     #[test]
-    fn test_default_is_remote() {
+    fn test_default_is_cloud() {
         let cfg = RepoConfig::default();
-        assert_eq!(cfg.backend, Backend::Remote);
-        assert!(cfg.grpc_url().is_none());
+        assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
+        assert!(cfg.cloud_api_url().is_none());
     }
 
     #[test]
     fn test_parse_local_backend() {
-        let toml = r#"backend = "local""#;
+        let toml = r#"
+[backend]
+type = "local"
+"#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.backend, Backend::Local);
+        assert_eq!(cfg.backend.backend_type, BackendType::Local);
     }
 
     #[test]
-    fn test_parse_grpc_url() {
+    fn test_parse_cloud_api_url() {
         let toml = r#"
-backend = "remote"
-[remote.cloud]
-url = "http://grpc.example.com:50051"
+[backend]
+type = "cloud"
+
+[backend.cloud]
+api_url = "https://api.rafn.dev"
 "#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.grpc_url(), Some("http://grpc.example.com:50051"));
+        assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
+        assert_eq!(cfg.cloud_api_url(), Some("https://api.rafn.dev"));
+    }
+
+    #[test]
+    fn test_parse_project_name() {
+        let toml = r#"
+[project]
+name = "my-project"
+"#;
+        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.project_name(), Some("my-project"));
     }
 
     #[test]
@@ -189,9 +224,23 @@ threshold = 10.0
 
     #[test]
     fn test_missing_optional_sections() {
-        let toml = r#"backend = "local""#;
+        let toml = r#"
+[backend]
+type = "local"
+"#;
         let cfg: RepoConfig = toml::from_str(toml).unwrap();
-        assert!(cfg.grpc_url().is_none());
+        assert!(cfg.cloud_api_url().is_none());
+        assert!(cfg.project_name().is_none());
         assert_eq!(cfg.bench_threshold(), 5.0);
+    }
+
+    #[test]
+    fn test_invalid_backend_type_rejected() {
+        let toml = r#"
+[backend]
+type = "remote"
+"#;
+        let result: std::result::Result<RepoConfig, _> = toml::from_str(toml);
+        assert!(result.is_err());
     }
 }

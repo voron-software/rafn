@@ -1,7 +1,8 @@
 //! `rafn compare` — compare benchmarks between two commits.
 //!
-//! With `backend = "local"` (rafn.toml) snapshots are read from the local
-//! store. With `backend = "remote"` (default) the remote gRPC service is queried.
+//! With `[backend] type = "local"` (rafn.toml) snapshots are read from the
+//! local store. With `[backend] type = "cloud"` (default) the rafn cloud
+//! service is queried.
 
 use anyhow::Result;
 use clap::Args;
