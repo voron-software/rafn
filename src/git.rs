@@ -3,6 +3,7 @@
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 use std::process::Command;
+use url::Url;
 
 use crate::config::RepositoryRef;
 
@@ -98,27 +99,28 @@ fn detect_branch() -> Option<String> {
 /// Parse a git remote URL into a [`RepositoryRef`], taking the host as
 /// `forge` and the remaining path as `owner/repository`.
 fn extract_repo_from_url(url: &str) -> Option<RepositoryRef> {
-    // Handle SSH format: git@github.com:owner/repo.git
-    if let Some(rest) = url.strip_prefix("git@") {
-        let (forge, path) = rest.split_once(':')?;
-        let path = path.trim_end_matches(".git");
-        let (owner, repository) = path.split_once('/')?;
-        return Some(RepositoryRef {
-            forge: forge.to_string(),
-            owner: owner.to_string(),
-            repository: repository.to_string(),
-        });
-    }
+    // Git's SCP-like syntax (`[user@]host:path`, e.g.
+    // `git@github.com:owner/repo.git`) isn't a URL; rewrite it to the
+    // equivalent `ssh://` form so it can go through the same parser as
+    // `https://`/`ssh://` remotes.
+    let normalized = if url.contains("://") {
+        url.to_string()
+    } else {
+        let (host_part, path_part) = url.split_once(':')?;
+        format!("ssh://{host_part}/{path_part}")
+    };
 
-    // Handle HTTPS format: https://github.com/owner/repo.git
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let (forge, path) = rest.split_once('/')?;
-    let path = path.trim_end_matches(".git");
+    let parsed = Url::parse(&normalized).ok()?;
+    let forge = parsed.host_str()?.to_string();
+
+    let path = parsed
+        .path()
+        .trim_start_matches('/')
+        .trim_end_matches(".git");
     let (owner, repository) = path.split_once('/')?;
+
     Some(RepositoryRef {
-        forge: forge.to_string(),
+        forge,
         owner: owner.to_string(),
         repository: repository.to_string(),
     })
@@ -156,6 +158,18 @@ mod tests {
     fn test_extract_repo_https_no_git_suffix() {
         assert_eq!(
             extract_repo_from_url("https://github.com/owner/repo"),
+            Some(RepositoryRef {
+                forge: "github.com".to_string(),
+                owner: "owner".to_string(),
+                repository: "repo".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_https_with_credentials() {
+        assert_eq!(
+            extract_repo_from_url("https://x-access-token@github.com/owner/repo.git"),
             Some(RepositoryRef {
                 forge: "github.com".to_string(),
                 owner: "owner".to_string(),
