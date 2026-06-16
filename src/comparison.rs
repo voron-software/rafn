@@ -9,24 +9,45 @@ use tabled::{Table, Tabled};
 use crate::proto::benchmark::statistic_mean_ns;
 use crate::proto::pb::BenchmarkSet;
 
-pub fn format_duration_ms(ns: &f64) -> String {
-    format!("{:.3}", ns / 1_000_000.0)
+pub fn format_duration(ns: &f64) -> String {
+    let v = *ns;
+    if v.abs() < 1_000.0 {
+        format!("{v:.3} ns")
+    } else if v.abs() < 1_000_000.0 {
+        format!("{:.3} µs", v / 1_000.0)
+    } else if v.abs() < 1_000_000_000.0 {
+        format!("{:.3} ms", v / 1_000_000.0)
+    } else {
+        format!("{:.3} s", v / 1_000_000_000.0)
+    }
 }
 
-pub fn format_diff_ms(ns: &f64) -> String {
-    let ms = ns / 1_000_000.0;
-    if *ns > 0.0 {
-        format!("+{ms:.3}")
+pub fn format_diff(ns: &f64) -> String {
+    let v = *ns;
+    let sign = if v > 0.0 { "+" } else { "" };
+    if v.abs() < 1_000.0 {
+        format!("{sign}{v:.3} ns")
+    } else if v.abs() < 1_000_000.0 {
+        format!("{sign}{:.3} µs", v / 1_000.0)
+    } else if v.abs() < 1_000_000_000.0 {
+        format!("{sign}{:.3} ms", v / 1_000_000.0)
     } else {
-        format!("{ms:.3}")
+        format!("{sign}{:.3} s", v / 1_000_000_000.0)
     }
 }
 
 pub fn format_percent(pct: &f64) -> String {
-    if *pct > 0.0 {
+    let s = if *pct > 0.0 {
         format!("+{pct:.1}%")
     } else {
         format!("{pct:.1}%")
+    };
+    if *pct > 0.0 {
+        s.red().to_string()
+    } else if *pct < 0.0 {
+        s.green().to_string()
+    } else {
+        s
     }
 }
 
@@ -34,11 +55,11 @@ pub fn format_percent(pct: &f64) -> String {
 pub struct ComparisonRow {
     #[tabled(rename = "Benchmark")]
     pub benchmark_name: String,
-    #[tabled(rename = "Base (ms)", display = "format_duration_ms")]
+    #[tabled(rename = "Base", display = "format_duration")]
     pub base_mean_ns: f64,
-    #[tabled(rename = "Head (ms)", display = "format_duration_ms")]
+    #[tabled(rename = "Head", display = "format_duration")]
     pub head_mean_ns: f64,
-    #[tabled(rename = "Diff (ms)", display = "format_diff_ms")]
+    #[tabled(rename = "Diff", display = "format_diff")]
     pub diff_ns: f64,
     #[tabled(rename = "Change %", display = "format_percent")]
     pub diff_pct: f64,
@@ -115,6 +136,81 @@ mod tests {
     use super::*;
     use crate::config::RepositoryRef;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn format_duration_selects_ns_below_1000() {
+        assert_eq!(format_duration(&0.0), "0.000 ns");
+        assert_eq!(format_duration(&999.9), "999.900 ns");
+    }
+
+    #[test]
+    fn format_duration_selects_us_below_1_000_000() {
+        assert_eq!(format_duration(&1_000.0), "1.000 µs");
+        assert_eq!(format_duration(&2_338.271), "2.338 µs");
+    }
+
+    #[test]
+    fn format_duration_selects_ms_below_1_000_000_000() {
+        assert_eq!(format_duration(&1_000_000.0), "1.000 ms");
+        assert_eq!(format_duration(&17_356_000.0), "17.356 ms");
+    }
+
+    #[test]
+    fn format_duration_selects_s_above_1_000_000_000() {
+        assert_eq!(format_duration(&1_000_000_000.0), "1.000 s");
+        assert_eq!(format_duration(&2_500_000_000.0), "2.500 s");
+    }
+
+    #[test]
+    fn format_diff_prefixes_positive_with_plus() {
+        assert_eq!(format_diff(&17.720), "+17.720 ns");
+        assert_eq!(format_diff(&1_500_000.0), "+1.500 ms");
+        assert_eq!(format_diff(&2_500_000_000.0), "+2.500 s");
+    }
+
+    #[test]
+    fn format_diff_no_plus_for_negative_or_zero() {
+        assert_eq!(format_diff(&-1_149.582), "-1.150 µs");
+        assert_eq!(format_diff(&0.0), "0.000 ns");
+        assert_eq!(format_diff(&-2_500_000_000.0), "-2.500 s");
+    }
+
+    #[test]
+    fn format_percent_positive_is_red_with_plus() {
+        assert_eq!(strip_ansi(&format_percent(&10.0)), "+10.0%");
+    }
+
+    #[test]
+    fn format_percent_negative_is_green_without_plus() {
+        assert_eq!(strip_ansi(&format_percent(&-7.5)), "-7.5%");
+    }
+
+    #[test]
+    fn format_percent_zero_is_plain() {
+        let out = format_percent(&0.0);
+        assert_eq!(out, "0.0%");
+        assert!(
+            !out.contains("\x1b["),
+            "zero change should have no ANSI codes"
+        );
+    }
 
     fn test_repository() -> RepositoryRef {
         RepositoryRef {

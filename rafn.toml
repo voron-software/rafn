@@ -1,0 +1,9 @@
+# Local backend for development — snapshots stay on disk and `rafn push` is a
+# no-op. Override with RAFN_BACKEND__TYPE=cloud (and set RAFN_API_KEY) to
+# upload snapshots to the rafn cloud service.
+[backend]
+type = "local"
+
+[project.repository]
+owner = "voron-software"
+repository = "rafn"
