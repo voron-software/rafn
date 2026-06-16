@@ -1,5 +1,7 @@
 /target
 /dist
+examples/rust/criterion/target/
+examples/cpp/google_benchmark/build/
 .rafn/
 npm/rafn/bin/rafn-*
 npm/rafn/LICENSE
