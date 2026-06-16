@@ -9,24 +9,45 @@ use tabled::{Table, Tabled};
 use crate::proto::benchmark::statistic_mean_ns;
 use crate::proto::pb::BenchmarkSet;
 
-pub fn format_duration_ms(ns: &f64) -> String {
-    format!("{:.3}", ns / 1_000_000.0)
+pub fn format_duration(ns: &f64) -> String {
+    let v = *ns;
+    if v.abs() < 1_000.0 {
+        format!("{v:.3} ns")
+    } else if v.abs() < 1_000_000.0 {
+        format!("{:.3} µs", v / 1_000.0)
+    } else if v.abs() < 1_000_000_000.0 {
+        format!("{:.3} ms", v / 1_000_000.0)
+    } else {
+        format!("{:.3} s", v / 1_000_000_000.0)
+    }
 }
 
-pub fn format_diff_ms(ns: &f64) -> String {
-    let ms = ns / 1_000_000.0;
-    if *ns > 0.0 {
-        format!("+{ms:.3}")
+pub fn format_diff(ns: &f64) -> String {
+    let v = *ns;
+    let sign = if v > 0.0 { "+" } else { "" };
+    if v.abs() < 1_000.0 {
+        format!("{sign}{v:.3} ns")
+    } else if v.abs() < 1_000_000.0 {
+        format!("{sign}{:.3} µs", v / 1_000.0)
+    } else if v.abs() < 1_000_000_000.0 {
+        format!("{sign}{:.3} ms", v / 1_000_000.0)
     } else {
-        format!("{ms:.3}")
+        format!("{sign}{:.3} s", v / 1_000_000_000.0)
     }
 }
 
 pub fn format_percent(pct: &f64) -> String {
-    if *pct > 0.0 {
+    let s = if *pct > 0.0 {
         format!("+{pct:.1}%")
     } else {
         format!("{pct:.1}%")
+    };
+    if *pct > 0.0 {
+        s.red().to_string()
+    } else if *pct < 0.0 {
+        s.green().to_string()
+    } else {
+        s
     }
 }
 
@@ -34,11 +55,11 @@ pub fn format_percent(pct: &f64) -> String {
 pub struct ComparisonRow {
     #[tabled(rename = "Benchmark")]
     pub benchmark_name: String,
-    #[tabled(rename = "Base (ms)", display = "format_duration_ms")]
+    #[tabled(rename = "Base", display = "format_duration")]
     pub base_mean_ns: f64,
-    #[tabled(rename = "Head (ms)", display = "format_duration_ms")]
+    #[tabled(rename = "Head", display = "format_duration")]
     pub head_mean_ns: f64,
-    #[tabled(rename = "Diff (ms)", display = "format_diff_ms")]
+    #[tabled(rename = "Diff", display = "format_diff")]
     pub diff_ns: f64,
     #[tabled(rename = "Change %", display = "format_percent")]
     pub diff_pct: f64,

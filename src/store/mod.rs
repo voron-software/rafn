@@ -30,11 +30,11 @@ pub struct TrendDataPoint {
     pub commit_sha: String,
     #[tabled(rename = "Timestamp", display = "format_timestamp")]
     pub timestamp: i64,
-    #[tabled(rename = "Mean (ms)", display = "format_duration_trend")]
+    #[tabled(rename = "Mean", display = "format_duration_trend")]
     pub mean_ns: f64,
-    #[tabled(rename = "Median (ms)", display = "format_duration_trend")]
+    #[tabled(rename = "Median", display = "format_duration_trend")]
     pub median_ns: f64,
-    #[tabled(rename = "Std Dev (ms)", display = "format_duration_trend")]
+    #[tabled(rename = "Std Dev", display = "format_duration_trend")]
     pub stddev_ns: f64,
 }
 
@@ -109,7 +109,7 @@ pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
 }
 
 pub fn format_duration_trend(ns: &f64) -> String {
-    format!("{:.3}", ns / 1_000_000.0)
+    crate::comparison::format_duration(ns)
 }
 
 pub fn format_timestamp(ts: &i64) -> String {
