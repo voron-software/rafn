@@ -137,6 +137,93 @@ mod tests {
     use crate::config::RepositoryRef;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
 
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn format_duration_selects_ns_below_1000() {
+        assert_eq!(format_duration(&0.0), "0.000 ns");
+        assert_eq!(format_duration(&999.9), "999.900 ns");
+    }
+
+    #[test]
+    fn format_duration_selects_us_below_1_000_000() {
+        assert_eq!(format_duration(&1_000.0), "1.000 µs");
+        assert_eq!(format_duration(&2_338.271), "2.338 µs");
+    }
+
+    #[test]
+    fn format_duration_selects_ms_below_1_000_000_000() {
+        assert_eq!(format_duration(&1_000_000.0), "1.000 ms");
+        assert_eq!(format_duration(&17_356_000.0), "17.356 ms");
+    }
+
+    #[test]
+    fn format_duration_selects_s_above_1_000_000_000() {
+        assert_eq!(format_duration(&1_000_000_000.0), "1.000 s");
+        assert_eq!(format_duration(&2_500_000_000.0), "2.500 s");
+    }
+
+    #[test]
+    fn format_diff_prefixes_positive_with_plus() {
+        assert_eq!(format_diff(&17.720), "+17.720 ns");
+        assert_eq!(format_diff(&1_500_000.0), "+1.500 ms");
+    }
+
+    #[test]
+    fn format_diff_no_plus_for_negative_or_zero() {
+        assert_eq!(format_diff(&-1_149.582), "-1.150 µs");
+        assert_eq!(format_diff(&0.0), "0.000 ns");
+    }
+
+    #[test]
+    fn format_percent_positive_is_red_with_plus() {
+        colored::control::set_override(true);
+        let out = format_percent(&10.0);
+        colored::control::unset_override();
+        assert_eq!(strip_ansi(&out), "+10.0%");
+        assert!(
+            out.contains("\x1b["),
+            "expected ANSI color codes for regression"
+        );
+    }
+
+    #[test]
+    fn format_percent_negative_is_green_without_plus() {
+        colored::control::set_override(true);
+        let out = format_percent(&-7.5);
+        colored::control::unset_override();
+        assert_eq!(strip_ansi(&out), "-7.5%");
+        assert!(
+            out.contains("\x1b["),
+            "expected ANSI color codes for improvement"
+        );
+    }
+
+    #[test]
+    fn format_percent_zero_is_plain() {
+        let out = format_percent(&0.0);
+        assert_eq!(out, "0.0%");
+        assert!(
+            !out.contains("\x1b["),
+            "zero change should have no ANSI codes"
+        );
+    }
+
     fn test_repository() -> RepositoryRef {
         RepositoryRef {
             forge: "github.com".to_string(),
