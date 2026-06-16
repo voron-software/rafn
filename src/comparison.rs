@@ -182,12 +182,14 @@ mod tests {
     fn format_diff_prefixes_positive_with_plus() {
         assert_eq!(format_diff(&17.720), "+17.720 ns");
         assert_eq!(format_diff(&1_500_000.0), "+1.500 ms");
+        assert_eq!(format_diff(&2_500_000_000.0), "+2.500 s");
     }
 
     #[test]
     fn format_diff_no_plus_for_negative_or_zero() {
         assert_eq!(format_diff(&-1_149.582), "-1.150 µs");
         assert_eq!(format_diff(&0.0), "0.000 ns");
+        assert_eq!(format_diff(&-2_500_000_000.0), "-2.500 s");
     }
 
     #[test]

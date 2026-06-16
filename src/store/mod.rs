@@ -195,4 +195,10 @@ mod tests {
         let effective = effective_with_repository(None);
         assert!(require_repository(&effective).is_err());
     }
+
+    #[test]
+    fn format_duration_trend_delegates_to_adaptive_units() {
+        assert_eq!(format_duration_trend(&500.0), "500.000 ns");
+        assert_eq!(format_duration_trend(&2_338.0), "2.338 µs");
+    }
 }
