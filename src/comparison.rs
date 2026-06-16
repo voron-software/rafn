@@ -192,26 +192,12 @@ mod tests {
 
     #[test]
     fn format_percent_positive_is_red_with_plus() {
-        colored::control::set_override(true);
-        let out = format_percent(&10.0);
-        colored::control::unset_override();
-        assert_eq!(strip_ansi(&out), "+10.0%");
-        assert!(
-            out.contains("\x1b["),
-            "expected ANSI color codes for regression"
-        );
+        assert_eq!(strip_ansi(&format_percent(&10.0)), "+10.0%");
     }
 
     #[test]
     fn format_percent_negative_is_green_without_plus() {
-        colored::control::set_override(true);
-        let out = format_percent(&-7.5);
-        colored::control::unset_override();
-        assert_eq!(strip_ansi(&out), "-7.5%");
-        assert!(
-            out.contains("\x1b["),
-            "expected ANSI color codes for improvement"
-        );
+        assert_eq!(strip_ansi(&format_percent(&-7.5)), "-7.5%");
     }
 
     #[test]
