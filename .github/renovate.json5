@@ -1,3 +1,10 @@
 {
   extends: ['github>voron-software/.github:renovate.json5'],
+  postUpgradeTasks: {
+    commands: [
+      "perl -i -pe 's/^(version = \")(\\d+\\.\\d+\\.)(\\d+)(\")/$1 . $2 . ($3+1) . $4/e' Cargo.toml",
+    ],
+    fileFilters: ["Cargo.toml"],
+    executionMode: "branch",
+  },
 }
