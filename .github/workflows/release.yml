@@ -270,3 +270,118 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: release-assets/*
           generate_release_notes: true
+
+  homebrew:
+    name: Update Homebrew tap
+    needs: [version, github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    if: ${{ !inputs.dry_run }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+
+    steps:
+      - name: Download checksums
+        run: |
+          curl -sfL \
+            "https://github.com/voron-software/rafn/releases/download/v${VERSION}/rafn-checksums.txt" \
+            -o rafn-checksums.txt
+
+      - name: Parse SHA256s
+        id: sha
+        run: |
+          get_sha() { grep "$1" rafn-checksums.txt | awk '{print $1}'; }
+          echo "macos_arm64=$(get_sha rafn-aarch64-apple-darwin.tar.gz)" >> "$GITHUB_OUTPUT"
+          echo "macos_x64=$(get_sha rafn-x86_64-apple-darwin.tar.gz)" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(get_sha rafn-aarch64-unknown-linux-gnu.tar.gz)" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(get_sha rafn-x86_64-unknown-linux-gnu.tar.gz)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: voron-software/homebrew-tap
+          token: ${{ secrets.RAFN_RELEASE_TOKEN }}
+          path: tap
+
+      - name: Render formula
+        env:
+          MACOS_ARM64_SHA: ${{ steps.sha.outputs.macos_arm64 }}
+          MACOS_X64_SHA: ${{ steps.sha.outputs.macos_x64 }}
+          LINUX_ARM64_SHA: ${{ steps.sha.outputs.linux_arm64 }}
+          LINUX_X64_SHA: ${{ steps.sha.outputs.linux_x64 }}
+        run: |
+          cat > tap/Formula/rafn.rb <<RUBY
+          class Rafn < Formula
+            desc "Lightweight benchmark uploader"
+            homepage "https://rafn.dev"
+            version "${VERSION}"
+            license "Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/voron-software/rafn/releases/download/v${VERSION}/rafn-aarch64-apple-darwin.tar.gz"
+                sha256 "${MACOS_ARM64_SHA}"
+              end
+              on_intel do
+                url "https://github.com/voron-software/rafn/releases/download/v${VERSION}/rafn-x86_64-apple-darwin.tar.gz"
+                sha256 "${MACOS_X64_SHA}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/voron-software/rafn/releases/download/v${VERSION}/rafn-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${LINUX_ARM64_SHA}"
+              end
+              on_intel do
+                url "https://github.com/voron-software/rafn/releases/download/v${VERSION}/rafn-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${LINUX_X64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "rafn"
+            end
+
+            test do
+              assert_match "rafn", shell_output("#{bin}/rafn --version")
+            end
+          end
+          RUBY
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/rafn.rb
+          if git diff --staged --quiet; then
+            echo "Formula already up to date"
+          else
+            git commit -m "rafn ${VERSION}"
+            git push
+          fi
+
+  winget:
+    name: Update winget manifest
+    needs: [version, github-release]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    if: ${{ !inputs.dry_run }}
+
+    steps:
+      - name: Download wingetcreate
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Submit update
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          RAFN_RELEASE_TOKEN: ${{ secrets.RAFN_RELEASE_TOKEN }}
+        run: |
+          .\wingetcreate.exe update VoronSoftware.Rafn `
+            --version $env:VERSION `
+            --urls "https://github.com/voron-software/rafn/releases/download/v$($env:VERSION)/rafn-x86_64-pc-windows-msvc.zip" `
+            --submit --token $env:RAFN_RELEASE_TOKEN

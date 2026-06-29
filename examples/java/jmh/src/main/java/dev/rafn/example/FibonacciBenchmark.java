@@ -1,4 +1,4 @@
-package com.perfscope.example;
+package dev.rafn.example;
 
 import org.openjdk.jmh.annotations.*;
 
