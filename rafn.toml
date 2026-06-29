@@ -7,3 +7,9 @@ type = "local"
 [project.repository]
 owner = "voron-software"
 repository = "rafn"
+
+[bench]
+# Serialize benchmark runs across the machine so only one runs at a time.
+# Useful when parallel agentic sessions might otherwise contend for CPU.
+# enable_lock = true
+# lock_timeout = 600  # seconds to wait for the lock before failing fatally

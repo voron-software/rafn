@@ -49,6 +49,23 @@ impl BenchCommand {
         let threshold = self.threshold.unwrap_or(effective.bench_threshold);
         let repository = store::require_repository(&effective)?;
 
+        // Serialize benchmark runs across the machine so parallel sessions
+        // don't contend for CPU. Held for the rest of the command; released on
+        // return (or process exit). Failing to acquire is fatal.
+        let _lock = if effective.lock_enabled {
+            match crate::lock::BenchLock::acquire(std::time::Duration::from_secs(
+                effective.lock_timeout_secs,
+            )) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    error!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
+
         let framework_config = framework::detect_framework(&self.args)?;
 
         info!(

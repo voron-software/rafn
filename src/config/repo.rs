@@ -59,6 +59,13 @@ pub struct BenchConfig {
     /// Regression threshold percentage. A benchmark must be slower by more
     /// than this percentage before `rafn bench` treats it as a regression.
     pub threshold: Option<f64>,
+
+    /// When set, `rafn bench` acquires a machine-global lock so only one
+    /// benchmark run executes at a time on the host. Off by default.
+    pub enable_lock: Option<bool>,
+
+    /// Seconds to wait for the machine-global lock before failing fatally.
+    pub lock_timeout: Option<u64>,
 }
 
 /// Repo-level configuration from `rafn.toml`.
@@ -143,6 +150,24 @@ impl RepoConfig {
     /// Regression threshold from `[bench].threshold`, defaulting to 5 %.
     pub fn bench_threshold(&self) -> f64 {
         self.bench.as_ref().and_then(|b| b.threshold).unwrap_or(5.0)
+    }
+
+    /// Whether the machine-global benchmark lock is enabled, from
+    /// `[bench].enable_lock`. Off by default.
+    pub fn lock_enabled(&self) -> bool {
+        self.bench
+            .as_ref()
+            .and_then(|b| b.enable_lock)
+            .unwrap_or(false)
+    }
+
+    /// Seconds to wait for the machine-global lock, from
+    /// `[bench].lock_timeout`, defaulting to 600 (10 minutes).
+    pub fn lock_timeout_secs(&self) -> u64 {
+        self.bench
+            .as_ref()
+            .and_then(|b| b.lock_timeout)
+            .unwrap_or(600)
     }
 }
 
@@ -269,6 +294,25 @@ threshold = 10.0
     fn test_default_bench_threshold() {
         let cfg = RepoConfig::default();
         assert_eq!(cfg.bench_threshold(), 5.0);
+    }
+
+    #[test]
+    fn test_parse_bench_lock() {
+        let toml = r#"
+[bench]
+enable_lock = true
+lock_timeout = 120
+"#;
+        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.lock_enabled());
+        assert_eq!(cfg.lock_timeout_secs(), 120);
+    }
+
+    #[test]
+    fn test_default_bench_lock() {
+        let cfg = RepoConfig::default();
+        assert!(!cfg.lock_enabled());
+        assert_eq!(cfg.lock_timeout_secs(), 600);
     }
 
     #[test]

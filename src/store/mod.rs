@@ -181,6 +181,8 @@ mod tests {
             endpoint: "http://localhost:50051".to_string(),
             repository,
             bench_threshold: 5.0,
+            lock_enabled: false,
+            lock_timeout_secs: 600,
         }
     }
 
