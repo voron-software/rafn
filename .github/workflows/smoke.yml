@@ -1,0 +1,117 @@
+name: Smoke test
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Latest version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.fetch.outputs.version }}
+    steps:
+      - name: Fetch latest release
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/voron-software/rafn/releases/latest \
+            | jq -r '.tag_name')
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    name: Homebrew
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install
+        run: brew install voron-software/tap/rafn
+      - name: Check version
+        run: |
+          actual=$(rafn --version)
+          expected="rafn ${{ needs.version.outputs.version }}"
+          [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
+
+  winget:
+    name: winget
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install
+        run: winget install VoronSoftware.Rafn --accept-source-agreements --accept-package-agreements
+      - name: Refresh PATH
+        run: |
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          echo "PATH=$machinePath;$userPath" >> $env:GITHUB_ENV
+      - name: Check version
+        run: |
+          $actual = (rafn --version).Trim()
+          $expected = "rafn ${{ needs.version.outputs.version }}"
+          if ($actual -ne $expected) {
+            Write-Error "Expected '$expected', got '$actual'"
+            exit 1
+          }
+
+  pip:
+    name: pip
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install
+        run: |
+          pipx install rafn
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Check version
+        run: |
+          actual=$(rafn --version)
+          expected="rafn ${{ needs.version.outputs.version }}"
+          [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
+
+  npm:
+    name: npm
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install
+        run: npm install -g @voron-software/rafn
+      - name: Check version
+        run: |
+          actual=$(rafn --version)
+          expected="rafn ${{ needs.version.outputs.version }}"
+          [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
+
+  cargo-binstall:
+    name: cargo-binstall
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install cargo-binstall
+        uses: taiki-e/install-action@9e1e5806d4a4822de933115878265be9aaa786d9 # v2.82.2
+        with:
+          tool: cargo-binstall
+      - name: Install rafn
+        run: cargo binstall --no-confirm rafn
+      - name: Check version
+        run: |
+          actual=$(rafn --version)
+          expected="rafn ${{ needs.version.outputs.version }}"
+          [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
