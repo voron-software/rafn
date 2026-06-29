@@ -1,9 +1,9 @@
 //! Machine-global advisory lock: only one `rafn bench` run at a time per host.
 //!
-//! The lock is an advisory `flock` on a *fixed*, machine-wide path so it is
-//! shared across every repository and session on the machine. That is what
-//! makes it machine-global: parallel agentic sessions benchmarking different
-//! repos still serialize against one another, keeping timings free of CPU
+//! The lock is an advisory `flock` on a lock file in the system temp dir, so it
+//! is shared across every repository and session that resolves the same temp
+//! directory on the machine. Parallel agentic sessions benchmarking different
+//! repos then serialize against one another, keeping timings free of CPU
 //! contention. Because it is an OS advisory lock, it is released automatically
 //! when the holding process exits or crashes — no stale lock files to clean up.
 
@@ -84,35 +84,18 @@ fn try_lock(file: &File) -> Result<bool> {
 /// avoids clobbering whatever an existing path points at (e.g. a symlink
 /// planted in a world-writable temp dir).
 fn open_lock_file(path: &Path) -> Result<File> {
-    let mut opts = OpenOptions::new();
-    opts.create(true).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // World read/write (subject to umask) so any user sharing the host can
-        // open the lock file. Only takes effect when the file is first created.
-        opts.mode(0o666);
-    }
-    opts.open(path)
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
         .with_context(|| format!("Failed to open lock file {}", path.display()))
 }
 
-/// Fixed, machine-wide path for the lock file.
-///
-/// On Unix this is a hardcoded path under the shared, sticky `/tmp` rather than
-/// `std::env::temp_dir()`, so sessions with differing `TMPDIR`/`TEMP`/`TMP`
-/// still contend for the *same* lock — which is the whole point of the feature.
-/// The sticky bit on `/tmp` keeps other users from replacing the file once it
-/// exists.
+/// Path for the lock file, under the system temp dir.
 fn lock_path() -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from("/tmp/rafn-bench.lock")
-    }
-    #[cfg(not(unix))]
-    {
-        std::env::temp_dir().join("rafn-bench.lock")
-    }
+    std::env::temp_dir().join("rafn-bench.lock")
 }
 
 #[cfg(test)]
