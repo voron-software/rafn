@@ -1,16 +1,15 @@
 //! Machine-global advisory lock: only one `rafn bench` run at a time per host.
 //!
-//! The lock is an advisory `flock` on a fixed path in the system temp dir, so
-//! it is shared across every repository and session on the machine. That is
-//! what makes it machine-global: parallel agentic sessions benchmarking
-//! different repos still serialize against one another, keeping timings free of
-//! CPU contention. Because it is an OS advisory lock, it is released
-//! automatically when the holding process exits or crashes — no stale lock
-//! files to clean up.
+//! The lock is an advisory `flock` on a *fixed*, machine-wide path so it is
+//! shared across every repository and session on the machine. That is what
+//! makes it machine-global: parallel agentic sessions benchmarking different
+//! repos still serialize against one another, keeping timings free of CPU
+//! contention. Because it is an OS advisory lock, it is released automatically
+//! when the holding process exits or crashes — no stale lock files to clean up.
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
-use std::fs::File;
+use fs2::{FileExt, lock_contended_error};
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -33,11 +32,10 @@ impl BenchLock {
     }
 
     fn acquire_at(path: &Path, timeout: Duration) -> Result<Self> {
-        let file = File::create(path)
-            .with_context(|| format!("Failed to open lock file {}", path.display()))?;
+        let file = open_lock_file(path)?;
 
         // Fast path: the lock is free, take it without any waiting noise.
-        if file.try_lock_exclusive().is_ok() {
+        if try_lock(&file)? {
             return Ok(Self { _file: file });
         }
 
@@ -49,7 +47,7 @@ impl BenchLock {
 
         let deadline = Instant::now() + timeout;
         loop {
-            if file.try_lock_exclusive().is_ok() {
+            if try_lock(&file)? {
                 return Ok(Self { _file: file });
             }
             if Instant::now() >= deadline {
@@ -64,9 +62,57 @@ impl BenchLock {
     }
 }
 
-/// Fixed machine-wide path for the lock file.
+/// Attempt to take the exclusive lock once.
+///
+/// Returns `Ok(true)` when the lock was acquired and `Ok(false)` when another
+/// process holds it (contention — worth retrying). Any other error (an
+/// unsupported filesystem, exhausted lock resources, ...) is *not* contention
+/// and is returned as `Err` so it surfaces immediately rather than spinning for
+/// the full timeout behind a misleading "still waiting" message.
+fn try_lock(file: &File) -> Result<bool> {
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == lock_contended_error().kind() => Ok(false),
+        Err(e) => Err(anyhow::Error::new(e).context("Failed to acquire global benchmark lock")),
+    }
+}
+
+/// Open (creating if absent) the lock file.
+///
+/// The file is opened for writing but deliberately *not* truncated and never
+/// written to — we only need a stable inode to `flock`. Skipping truncation
+/// avoids clobbering whatever an existing path points at (e.g. a symlink
+/// planted in a world-writable temp dir).
+fn open_lock_file(path: &Path) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // World read/write (subject to umask) so any user sharing the host can
+        // open the lock file. Only takes effect when the file is first created.
+        opts.mode(0o666);
+    }
+    opts.open(path)
+        .with_context(|| format!("Failed to open lock file {}", path.display()))
+}
+
+/// Fixed, machine-wide path for the lock file.
+///
+/// On Unix this is a hardcoded path under the shared, sticky `/tmp` rather than
+/// `std::env::temp_dir()`, so sessions with differing `TMPDIR`/`TEMP`/`TMP`
+/// still contend for the *same* lock — which is the whole point of the feature.
+/// The sticky bit on `/tmp` keeps other users from replacing the file once it
+/// exists.
 fn lock_path() -> PathBuf {
-    std::env::temp_dir().join("rafn-bench.lock")
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp/rafn-bench.lock")
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join("rafn-bench.lock")
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +152,19 @@ mod tests {
 
         let second = BenchLock::acquire_at(&path, Duration::from_secs(1));
         assert!(second.is_ok());
+    }
+
+    #[test]
+    fn does_not_truncate_existing_file() {
+        // The lock file's contents must survive being opened for locking, so a
+        // pre-existing path is never clobbered.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rafn-bench.lock");
+        std::fs::write(&path, b"sentinel").unwrap();
+
+        let lock = BenchLock::acquire_at(&path, Duration::from_secs(1)).unwrap();
+        drop(lock);
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
     }
 }
