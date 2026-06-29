@@ -2,6 +2,15 @@
 
 Lightweight benchmark uploader
 
+## Installation
+
+| Method | Command |
+|--------|---------|
+| Homebrew (macOS/Linux) | `brew install voron-software/tap/rafn` |
+| winget (Windows) | `winget install VoronSoftware.Rafn` |
+| cargo-binstall | `cargo binstall rafn` |
+| npm | `npm install -g @voron-software/rafn` |
+
 ## GitHub Actions
 
 Use this repository as a GitHub Action to install the `rafn` CLI and run it in a workflow. By default it runs `rafn bench`:

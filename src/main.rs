@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "rafn")]
-#[command(about = "Benchmark runner and uploader for perfscope")]
+#[command(about = "Lightweight benchmark uploader")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]

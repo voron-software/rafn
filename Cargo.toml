@@ -3,7 +3,8 @@ name = "rafn"
 version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
-description = "A lightweight benchmark uploader for perfscope"
+description = "A lightweight benchmark uploader"
+homepage = "https://rafn.dev"
 repository = "https://github.com/voron-software/rafn"
 
 [package.metadata.binstall]

@@ -1,7 +1,7 @@
 {
   "name": "@voron-software/rafn",
   "version": "0.1.0",
-  "description": "A lightweight benchmark uploader for perfscope",
+  "description": "A lightweight benchmark uploader",
   "bin": {
     "rafn": "bin/rafn.js"
   },
@@ -11,7 +11,7 @@
     "type": "git",
     "url": "https://github.com/voron-software/rafn"
   },
-  "keywords": ["benchmarking", "performance", "cli", "perfscope"],
+  "keywords": ["benchmarking", "performance", "cli"],
   "engines": {
     "node": ">=14"
   }

@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "rafn"
 dynamic = ["version"]
-description = "A lightweight benchmark uploader for perfscope"
+description = "A lightweight benchmark uploader"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.8"

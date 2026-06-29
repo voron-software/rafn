@@ -59,7 +59,7 @@ docker run --rm \
 ## Project Structure
 
 - `pom.xml` - Maven project configuration with JMH dependencies
-- `src/main/java/com/perfscope/example/FibonacciBenchmark.java` - Fibonacci benchmarks
+- `src/main/java/dev/rafn/example/FibonacciBenchmark.java` - Fibonacci benchmarks
 - `Dockerfile` - containerized `rafn bench` workflow
 
 JMH writes raw JSON to `.rafn/bench-results/jmh-result.json`; Rafn stores parsed
