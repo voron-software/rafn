@@ -8,8 +8,10 @@ Lightweight benchmark uploader
 |--------|---------|
 | Homebrew (macOS/Linux) | `brew install voron-software/tap/rafn` |
 | winget (Windows) | `winget install VoronSoftware.Rafn` |
-| cargo-binstall | `cargo binstall rafn` |
+| pip | `pip install rafn` |
 | npm | `npm install -g @voron-software/rafn` |
+| cargo-binstall | `cargo binstall rafn` |
+| cargo install | `cargo install rafn` |
 
 ## GitHub Actions
 
