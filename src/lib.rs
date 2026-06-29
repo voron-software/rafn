@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod framework;
 pub mod git;
 pub mod ingest;
+pub mod lock;
 pub mod proto;
 pub mod runner;
 pub mod store;

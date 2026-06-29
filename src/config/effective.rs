@@ -14,6 +14,8 @@ pub struct EffectiveConfig {
     pub endpoint: String,
     pub repository: Option<RepositoryRef>,
     pub bench_threshold: f64,
+    pub lock_enabled: bool,
+    pub lock_timeout_secs: u64,
 }
 
 impl EffectiveConfig {
@@ -40,6 +42,8 @@ impl EffectiveConfig {
                 .unwrap_or_else(|| user.cloud.api_url.clone()),
             repository: repo.project_repository().cloned().or(git_repository),
             bench_threshold: repo.bench_threshold(),
+            lock_enabled: repo.lock_enabled(),
+            lock_timeout_secs: repo.lock_timeout_secs(),
         }
     }
 }
@@ -110,6 +114,7 @@ mod tests {
         let repo = RepoConfig {
             bench: Some(crate::config::BenchConfig {
                 threshold: Some(12.5),
+                ..Default::default()
             }),
             ..Default::default()
         };
