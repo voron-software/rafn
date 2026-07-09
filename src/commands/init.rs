@@ -10,6 +10,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::config::RepoConfig;
+
 const RAFN_TOML_CONTENTS: &str = "[backend]\ntype = \"cloud\"\n";
 const GITIGNORE_ENTRY: &str = ".rafn/snapshots";
 
@@ -23,14 +25,17 @@ impl InitCommand {
 }
 
 fn init_in(dir: &Path) -> Result<()> {
-    let rafn_toml_path = dir.join("rafn.toml");
-    if rafn_toml_path.exists() {
+    // Walk up the same way `RepoConfig::load` does: a `rafn.toml` in an
+    // ancestor directory already governs this subdirectory, so scaffolding a
+    // nested one here would silently shadow it instead of extending it.
+    if let Some(existing) = RepoConfig::find_toml(dir) {
         bail!(
             "{} already exists; refusing to overwrite",
-            rafn_toml_path.display()
+            existing.display()
         );
     }
 
+    let rafn_toml_path = dir.join("rafn.toml");
     fs::write(&rafn_toml_path, RAFN_TOML_CONTENTS)
         .with_context(|| format!("Failed to write {}", rafn_toml_path.display()))?;
     println!("Created rafn.toml (backend: cloud)");
@@ -122,6 +127,19 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "[backend]\ntype = \"local\"\n"
         );
+    }
+
+    #[test]
+    fn test_refuses_when_ancestor_has_rafn_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("rafn.toml"), "[backend]\ntype = \"local\"\n").unwrap();
+        let sub = root.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+
+        let result = init_in(&sub);
+        assert!(result.is_err());
+        assert!(!sub.join("rafn.toml").exists());
     }
 
     #[test]
