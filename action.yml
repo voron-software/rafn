@@ -1,23 +1,11 @@
 name: Run Rafn
-description: Download the rafn CLI from GitHub Releases and run it.
+description: Install the rafn CLI via taiki-e/install-action and run it.
 
 inputs:
   version:
-    description: Release tag to install, such as v0.1.0. Use latest for the newest release.
+    description: Crate version to install, such as 0.1.0. Use latest for the newest release.
     required: false
     default: latest
-  repository:
-    description: GitHub repository to download releases from.
-    required: false
-    default: voron-software/rafn
-  github-token:
-    description: GitHub token used for release API requests.
-    required: false
-    default: ''
-  install-dir:
-    description: Directory where rafn should be installed.
-    required: false
-    default: ''
   command:
     description: Rafn subcommand to invoke, such as bench, push, trend, compare, bisect, or config.
     required: false
@@ -34,97 +22,26 @@ inputs:
 outputs:
   path:
     description: Path to the installed rafn executable.
-    value: ${{ steps.install.outputs.path }}
+    value: ${{ steps.resolve.outputs.path }}
 
 runs:
   using: composite
   steps:
-    - name: Download rafn
-      id: install
+    - name: Install rafn
+      uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+      with:
+        tool: rafn${{ inputs.version != 'latest' && format('@{0}', inputs.version) || '' }}
+
+    - name: Resolve rafn path
+      id: resolve
       shell: bash
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-        INPUT_REPOSITORY: ${{ inputs.repository }}
-        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
-        GITHUB_TOKEN_FALLBACK: ${{ github.token }}
-        INPUT_INSTALL_DIR: ${{ inputs.install-dir }}
-      run: |
-        set -euo pipefail
-        github_token="${INPUT_GITHUB_TOKEN:-${GITHUB_TOKEN_FALLBACK}}"
-
-        case "${RUNNER_OS}-${RUNNER_ARCH}" in
-          Linux-X64)
-            asset="rafn-linux-x64"
-            ;;
-          Linux-ARM64)
-            asset="rafn-linux-arm64"
-            ;;
-          macOS-X64)
-            asset="rafn-darwin-x64"
-            ;;
-          macOS-ARM64)
-            asset="rafn-darwin-arm64"
-            ;;
-          Windows-X64)
-            asset="rafn-win32-x64.exe"
-            ;;
-          *)
-            echo "::error::Unsupported runner platform: ${RUNNER_OS}-${RUNNER_ARCH}"
-            exit 1
-            ;;
-        esac
-
-        if [ -n "${INPUT_INSTALL_DIR}" ]; then
-          install_dir="${INPUT_INSTALL_DIR}"
-        else
-          install_dir="${RUNNER_TEMP}/rafn/bin"
-        fi
-
-        mkdir -p "${install_dir}"
-        destination="${install_dir}/${asset}"
-
-        if [ "${INPUT_VERSION}" = "latest" ]; then
-          api_url="https://api.github.com/repos/${INPUT_REPOSITORY}/releases/latest"
-          release_json="$(curl --fail --silent --show-error --location \
-            --header "Authorization: Bearer ${github_token}" \
-            --header "Accept: application/vnd.github+json" \
-            "${api_url}")"
-
-          download_url="$(RELEASE_JSON="${release_json}" ASSET="${asset}" node -e '
-            const release = JSON.parse(process.env.RELEASE_JSON);
-            const asset = release.assets.find((item) => item.name === process.env.ASSET);
-            if (!asset) {
-              console.error(`asset ${process.env.ASSET} was not found in ${release.html_url}`);
-              process.exit(1);
-            }
-            process.stdout.write(asset.browser_download_url);
-          ')"
-        else
-          download_url="https://github.com/${INPUT_REPOSITORY}/releases/download/${INPUT_VERSION}/${asset}"
-        fi
-
-        curl --fail --silent --show-error --location \
-          --header "Authorization: Bearer ${github_token}" \
-          --output "${destination}" \
-          "${download_url}"
-
-        chmod +x "${destination}"
-
-        if [ "${RUNNER_OS}" = "Windows" ]; then
-          link="${install_dir}/rafn.exe"
-        else
-          link="${install_dir}/rafn"
-        fi
-
-        cp "${destination}" "${link}"
-        echo "${install_dir}" >> "${GITHUB_PATH}"
-        echo "path=${link}" >> "${GITHUB_OUTPUT}"
+      run: echo "path=$(command -v rafn)" >> "${GITHUB_OUTPUT}"
 
     - name: Run rafn
       shell: bash
       working-directory: ${{ inputs.working-directory || github.workspace }}
       env:
-        RAFN_PATH: ${{ steps.install.outputs.path }}
+        RAFN_PATH: ${{ steps.resolve.outputs.path }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_ARGS: ${{ inputs.args }}
       run: |
