@@ -92,7 +92,7 @@ mod tests {
         let user = Config::default();
 
         let effective = EffectiveConfig::resolve_with_git_repository(&repo, &user, None);
-        assert_eq!(effective.endpoint, "https://api.rafn.dev");
+        assert_eq!(effective.endpoint, "https://api.rqfn.dev");
     }
 
     #[test]

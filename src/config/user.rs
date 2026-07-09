@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn default_api_url() -> String {
-    "https://api.rafn.dev".to_string()
+    "https://api.rqfn.dev".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.cloud.api_url, "https://api.rafn.dev");
+        assert_eq!(config.cloud.api_url, "https://api.rqfn.dev");
     }
 
     #[test]
