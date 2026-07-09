@@ -6,13 +6,13 @@
 //! sourced from the `RAFN_API_KEY` environment variable, never persisted to
 //! this file.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn default_api_url() -> String {
-    "http://localhost:50051".to_string()
+    "https://api.rafn.dev".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,8 +78,10 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::config_path()?;
+        self.save_to(&Self::config_path()?)
+    }
 
+    fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("Failed to create config directory: {}", parent.display())
@@ -88,10 +90,25 @@ impl Config {
 
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
-        fs::write(&path, content)
+        fs::write(path, content)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
 
         Ok(())
+    }
+
+    /// Write the default config to `path`, refusing to overwrite a file that
+    /// already exists there.
+    pub fn init_at(path: &Path) -> Result<Self> {
+        if path.exists() {
+            bail!(
+                "Configuration file already exists at {}; refusing to overwrite",
+                path.display()
+            );
+        }
+
+        let config = Self::default();
+        config.save_to(path)?;
+        Ok(config)
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
@@ -117,7 +134,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.cloud.api_url, "http://localhost:50051");
+        assert_eq!(config.cloud.api_url, "https://api.rafn.dev");
     }
 
     #[test]
@@ -156,6 +173,29 @@ mod tests {
 
         let config = Config::load_from(&path).unwrap();
         assert_eq!(config.cloud.api_url, "https://file.example.com");
+    }
+
+    #[test]
+    fn test_init_at_writes_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let config = Config::init_at(&path).unwrap();
+        assert_eq!(config, Config::default());
+        assert_eq!(Config::load_from(&path).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn test_init_at_refuses_to_overwrite_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[cloud]\napi_url = \"https://custom.example.com\"\n").unwrap();
+
+        assert!(Config::init_at(&path).is_err());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[cloud]\napi_url = \"https://custom.example.com\"\n"
+        );
     }
 
     #[test]

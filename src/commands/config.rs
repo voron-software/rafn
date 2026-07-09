@@ -34,9 +34,8 @@ impl ConfigCommand {
     pub async fn execute(self) -> Result<()> {
         match self.command {
             ConfigSubcommand::Init => {
-                let config = Config::default();
-                config.save().context("Failed to save config")?;
                 let path = Config::config_path()?;
+                let config = Config::init_at(&path)?;
                 println!("Configuration file initialized at: {}", path.display());
                 println!("\nDefault values:");
                 println!("  cloud.api_url: {}", config.cloud.api_url);
