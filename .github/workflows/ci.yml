@@ -76,6 +76,8 @@ jobs:
     name: Benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -91,4 +93,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run benchmarks
-        run: cargo bench --workspace --no-fail-fast
+        uses: voron-software/rafn@07646ee17a6ccdf0c36ed001b68698b9262c4ca1 # fix(action): install via taiki-e/install-action
+        with:
+          command: bench
+          args: --no-fail -- --workspace --no-fail-fast
