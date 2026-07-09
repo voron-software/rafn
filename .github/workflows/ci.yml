@@ -93,7 +93,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run benchmarks
-        uses: voron-software/rafn@ccabd74221ec57d85f01d7bb3deaad46481a7ed0 # v0.1.2
+        uses: voron-software/rafn@07646ee17a6ccdf0c36ed001b68698b9262c4ca1 # fix(action): install via taiki-e/install-action
         with:
           command: bench
           args: --no-fail -- --workspace --no-fail-fast
