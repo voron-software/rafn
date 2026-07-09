@@ -144,6 +144,13 @@ impl RepoConfig {
     pub fn bench_threshold(&self) -> f64 {
         self.bench.as_ref().and_then(|b| b.threshold).unwrap_or(5.0)
     }
+
+    /// Find the `rafn.toml` that [`load`](Self::load) would discover from
+    /// `dir`, without loading it. Used by `rafn init` to detect an
+    /// already-configured ancestor directory before scaffolding a new file.
+    pub fn find_toml(dir: &Path) -> Option<PathBuf> {
+        find_rafn_toml(dir)
+    }
 }
 
 /// Walk up from `start` looking for `rafn.toml`, stopping at the first match.
