@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rafn::commands::{
     bench::BenchCommand, bisect::BisectCommand, compare::CompareCommand, config::ConfigCommand,
-    push::PushCommand, trend::TrendCommand,
+    init::InitCommand, push::PushCommand, trend::TrendCommand,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -17,6 +17,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Scaffold a repo for cloud-backed benchmark tracking
+    Init(InitCommand),
+
     /// Run benchmarks, save a local snapshot, and show regressions
     Bench(BenchCommand),
 
@@ -43,6 +46,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init(cmd) => cmd.execute().await,
         Commands::Bench(cmd) => cmd.execute().await,
         Commands::Push(cmd) => cmd.execute().await,
         Commands::Trend(cmd) => cmd.execute().await,
