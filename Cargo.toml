@@ -61,8 +61,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL parsing (git remote URLs)
 url = "2"
 
-# Cross-process advisory file locking
-fs2 = "0.4"
+# Machine-global lock via a process-shared robust mutex (Linux)
+libc = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
