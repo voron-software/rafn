@@ -13,6 +13,18 @@
 //!
 //! On non-Linux platforms the robust/`timedlock` primitives aren't uniformly
 //! available, so the lock degrades to a no-op with a warning.
+//!
+//! ## Scope
+//!
+//! The guarantee is "one run per host *namespace*". POSIX shared-memory
+//! objects live in the per-mount-namespace `/dev/shm`, so sessions in fully
+//! isolated containers (separate mount/IPC namespaces) map different objects
+//! and won't serialize against each other. This is inherent to any in-host
+//! primitive — a named POSIX semaphore, SysV IPC, or an `flock` file all share
+//! the same limitation — and there is no way to serialize across isolated
+//! containers without a resource they share. To serialize containerized
+//! sessions, run them in the host IPC/mount namespace (e.g. a shared
+//! `/dev/shm`, `--ipc=host`).
 
 #[cfg(target_os = "linux")]
 pub use linux::BenchLock;
@@ -59,15 +71,11 @@ mod linux {
     /// attach after the creator wait until the mutex is usable.
     const READY_MAGIC: u32 = 0x7261_666e; // "rafn"
 
-    /// How long an attaching process waits for the creator to finish setting
-    /// up the shared object before giving up (milliseconds).
-    const SETUP_WAIT_MS: u32 = 5_000;
-
     /// Layout of the shared-memory region.
     #[repr(C)]
     struct Shared {
         /// `READY_MAGIC` once `mutex` is initialized. Release/acquire handshake
-        /// between the creating process and later attachers.
+        /// with whichever process initialized the region under the init lock.
         ready: AtomicU32,
         _pad: u32,
         mutex: libc::pthread_mutex_t,
@@ -186,107 +194,57 @@ mod linux {
         }
     }
 
-    /// Create or attach the shared-memory object and return a pointer to its
-    /// [`Shared`] region, ensuring the robust mutex inside is initialized.
+    /// Open (creating if needed) the shared-memory object and return a pointer
+    /// to its [`Shared`] region, ensuring the robust mutex inside is
+    /// initialized exactly once.
+    ///
+    /// Initialization is serialized with an advisory `flock` on the object's
+    /// descriptor. `flock` is released automatically when the holder's fd is
+    /// closed or the process dies, so a run that crashes mid-initialization
+    /// cannot leave the object permanently un-ready — the next process simply
+    /// takes the init lock and finishes (or redoes) the setup.
     fn map_shared(name: &CStr) -> Result<(*mut Shared, usize)> {
         let size = mem::size_of::<Shared>();
-        loop {
-            // Try to be the creator (exclusive create).
-            let fd = unsafe {
-                libc::shm_open(
-                    name.as_ptr() as *const c_char,
-                    libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
-                    0o600,
-                )
-            };
-            if fd >= 0 {
-                return create(name, fd, size);
-            }
 
-            let err = IoError::last_os_error();
-            if err.raw_os_error() != Some(libc::EEXIST) {
-                bail!("shm_open (create) for lock {name:?}: {err}");
-            }
-
-            // Someone else created it (or is mid-creation): attach.
-            match attach(name, size)? {
-                Some(shared) => return Ok((shared, size)),
-                // Creator unlinked between our EEXIST and the attach — retry.
-                None => continue,
-            }
-        }
-    }
-
-    /// Creator path: size the object, map it, initialize the robust mutex, then
-    /// publish readiness.
-    fn create(name: &CStr, fd: i32, size: usize) -> Result<(*mut Shared, usize)> {
-        let cleanup = |fd: i32| unsafe {
-            libc::close(fd);
-            libc::shm_unlink(name.as_ptr() as *const c_char);
-        };
-
-        if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
-            let e = IoError::last_os_error();
-            cleanup(fd);
-            bail!("ftruncate lock shm {name:?}: {e}");
-        }
-
-        let ptr = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd,
-                0,
+        let fd = unsafe {
+            libc::shm_open(
+                name.as_ptr() as *const c_char,
+                libc::O_CREAT | libc::O_RDWR,
+                0o600,
             )
         };
-        unsafe { libc::close(fd) };
-        if ptr == libc::MAP_FAILED {
-            let e = IoError::last_os_error();
-            unsafe { libc::shm_unlink(name.as_ptr() as *const c_char) };
-            bail!("mmap lock shm {name:?}: {e}");
-        }
-
-        let shared = ptr as *mut Shared;
-        let mutex = unsafe { ptr::addr_of_mut!((*shared).mutex) };
-        if let Err(e) = init_robust_mutex(mutex) {
-            unsafe {
-                libc::munmap(ptr, size);
-                libc::shm_unlink(name.as_ptr() as *const c_char);
-            }
-            return Err(e);
-        }
-        unsafe { (*shared).ready.store(READY_MAGIC, Ordering::Release) };
-        Ok((shared, size))
-    }
-
-    /// Attacher path: open the existing object, wait for the creator to size
-    /// and initialize it, then map it. Returns `Ok(None)` if the object
-    /// vanished (creator unlinked it) so the caller retries.
-    fn attach(name: &CStr, size: usize) -> Result<Option<*mut Shared>> {
-        let fd = unsafe { libc::shm_open(name.as_ptr() as *const c_char, libc::O_RDWR, 0o600) };
         if fd < 0 {
-            let e = IoError::last_os_error();
-            if e.raw_os_error() == Some(libc::ENOENT) {
-                return Ok(None);
-            }
-            bail!("shm_open (attach) for lock {name:?}: {e}");
+            bail!("shm_open for lock {name:?}: {}", IoError::last_os_error());
         }
 
-        // Wait for the creator to size the object.
-        let mut waited = 0;
-        loop {
-            let mut st: libc::stat = unsafe { mem::zeroed() };
-            if unsafe { libc::fstat(fd, &mut st) } == 0 && st.st_size as usize >= size {
-                break;
-            }
-            if waited >= SETUP_WAIT_MS {
-                unsafe { libc::close(fd) };
-                bail!("lock shm {name:?} was never sized by its creator");
-            }
-            std::thread::sleep(Duration::from_millis(1));
-            waited += 1;
+        if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
+            let e = IoError::last_os_error();
+            unsafe { libc::close(fd) };
+            bail!("flock (init) lock shm {name:?}: {e}");
+        }
+
+        let result = init_region(name, fd, size);
+
+        // Release the init lock and drop the fd; the mapping stays valid.
+        unsafe {
+            libc::flock(fd, libc::LOCK_UN);
+            libc::close(fd);
+        }
+        result.map(|shared| (shared, size))
+    }
+
+    /// Size, map, and (if not already done) initialize the shared region.
+    /// Caller must hold the init `flock` on `fd`.
+    fn init_region(name: &CStr, fd: i32, size: usize) -> Result<*mut Shared> {
+        let mut st: libc::stat = unsafe { mem::zeroed() };
+        if unsafe { libc::fstat(fd, &mut st) } != 0 {
+            bail!("fstat lock shm {name:?}: {}", IoError::last_os_error());
+        }
+        // Grow to the needed size only if smaller, so an already-initialized
+        // object is never re-truncated (which would zero the live mutex).
+        if (st.st_size as usize) < size && unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0
+        {
+            bail!("ftruncate lock shm {name:?}: {}", IoError::last_os_error());
         }
 
         let ptr = unsafe {
@@ -299,26 +257,22 @@ mod linux {
                 0,
             )
         };
-        unsafe { libc::close(fd) };
         if ptr == libc::MAP_FAILED {
-            bail!(
-                "mmap lock shm {name:?} (attach): {}",
-                IoError::last_os_error()
-            );
+            bail!("mmap lock shm {name:?}: {}", IoError::last_os_error());
         }
         let shared = ptr as *mut Shared;
 
-        // Wait for the mutex to be initialized before anyone locks it.
-        let mut waited = 0;
-        while unsafe { (*shared).ready.load(Ordering::Acquire) } != READY_MAGIC {
-            if waited >= SETUP_WAIT_MS {
+        // Initialize the robust mutex once. Guarded by the init flock, so no
+        // other process observes a half-initialized region.
+        if unsafe { (*shared).ready.load(Ordering::Acquire) } != READY_MAGIC {
+            let mutex = unsafe { ptr::addr_of_mut!((*shared).mutex) };
+            if let Err(e) = init_robust_mutex(mutex) {
                 unsafe { libc::munmap(ptr, size) };
-                bail!("lock shm {name:?} was never initialized by its creator");
+                return Err(e);
             }
-            std::thread::sleep(Duration::from_millis(1));
-            waited += 1;
+            unsafe { (*shared).ready.store(READY_MAGIC, Ordering::Release) };
         }
-        Ok(Some(shared))
+        Ok(shared)
     }
 
     /// Initialize a process-shared, robust mutex in place.
