@@ -98,16 +98,42 @@ fn try_lock(file: &File) -> Result<bool> {
 /// avoids clobbering whatever an existing path points at (e.g. a symlink
 /// planted in a world-writable temp dir).
 fn open_lock_file(path: &Path) -> Result<File> {
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
         .open(path)
-        .with_context(|| format!("Failed to open lock file {}", path.display()))
+        .with_context(|| format!("Failed to open lock file {}", path.display()))?;
+
+    // Make sure any user on the host can open and lock this file, not just
+    // whoever happened to create it — otherwise the lock stops being
+    // machine-global the moment a second user runs `rafn bench`. Best-effort:
+    // if another user already created the file, we won't own it and can't
+    // chmod it, but if we could open it above then its permissions already
+    // allow us, so there's nothing to fix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o666));
+    }
+
+    Ok(file)
 }
 
-/// Path for the lock file, under the system temp dir.
+/// Path for the lock file.
+///
+/// Deliberately not `std::env::temp_dir()`: that resolves `TMPDIR`/`TEMP`/`TMP`,
+/// so two benchmark processes with different environments (sandboxes,
+/// containers, ...) would each pick a different lock file and never actually
+/// serialize against each other. A fixed, well-known location keeps the lock
+/// machine-global regardless of environment.
+#[cfg(unix)]
+fn lock_path() -> PathBuf {
+    PathBuf::from("/tmp/rafn-bench.lock")
+}
+
+#[cfg(not(unix))]
 fn lock_path() -> PathBuf {
     std::env::temp_dir().join("rafn-bench.lock")
 }
@@ -163,5 +189,29 @@ mod tests {
         drop(lock);
 
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_path_is_fixed_not_env_dependent() {
+        // Two processes with different TMPDIR/TEMP/TMP must still agree on
+        // one lock file, or the lock stops being machine-global.
+        assert_eq!(lock_path(), PathBuf::from("/tmp/rafn-bench.lock"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_file_is_world_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rafn-bench.lock");
+
+        let lock = BenchLock::acquire_at(&path, Duration::from_secs(1)).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        drop(lock);
+
+        // So a different user's `rafn bench` run can open and lock it too.
+        assert_eq!(mode, 0o666);
     }
 }
