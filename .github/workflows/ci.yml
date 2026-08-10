@@ -53,7 +53,7 @@ jobs:
           components: clippy
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -90,7 +90,7 @@ jobs:
           toolchain: stable
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Run benchmarks
         uses: voron-software/rafn@07646ee17a6ccdf0c36ed001b68698b9262c4ca1 # fix(action): install via taiki-e/install-action
