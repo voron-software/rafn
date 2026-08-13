@@ -109,7 +109,7 @@ jobs:
         with:
           tool: cargo-binstall
       - name: Install rafn
-        run: cargo binstall --no-confirm --strategies gh-release rafn
+        run: cargo binstall --no-confirm --strategies crate-meta-data rafn
       - name: Check version
         run: |
           actual=$(rafn --version)
