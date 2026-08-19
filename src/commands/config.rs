@@ -4,13 +4,13 @@ use crate::config::Config;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ConfigCommand {
     #[command(subcommand)]
     pub command: ConfigSubcommand,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum ConfigSubcommand {
     /// Initialize configuration file
     Init,
@@ -31,6 +31,9 @@ pub enum ConfigSubcommand {
 }
 
 impl ConfigCommand {
+    // stdout is this CLI's output contract, not debug noise — users pipe/read it
+    // directly, unlike `tracing`'s log lines.
+    #[allow(clippy::print_stdout)]
     pub async fn execute(self) -> Result<()> {
         match self.command {
             ConfigSubcommand::Init => {

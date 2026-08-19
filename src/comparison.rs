@@ -118,6 +118,9 @@ pub fn has_regressions(rows: &[ComparisonRow], threshold: f64) -> bool {
 }
 
 /// Print a comparison table and a summary line to stdout.
+// stdout is this CLI's output contract, not debug noise — users pipe/read it
+// directly, unlike `tracing`'s log lines.
+#[allow(clippy::print_stdout)]
 pub fn print_table(rows: &[ComparisonRow]) {
     let table = Table::new(rows).to_string();
     println!("{table}");

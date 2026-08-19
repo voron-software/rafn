@@ -2,10 +2,22 @@
 name = "rafn"
 version = "0.1.2"
 edition = "2024"
+rust-version = "1.97"
 license = "Apache-2.0"
 description = "A lightweight benchmark uploader"
 homepage = "https://rafn.dev"
 repository = "https://github.com/voron-software/rafn"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/rafn-{ target }.tar.gz"

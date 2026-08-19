@@ -13,7 +13,7 @@ use crate::config::{Config, EffectiveConfig, RepoConfig};
 use crate::proto::benchmark::timestamp_now;
 use crate::{comparison, discovery, framework, git, ingest, runner, store};
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct BenchCommand {
     /// Commit SHA (auto-detected from git if not specified)
     #[arg(long, env = "RAFN_COMMIT")]

@@ -161,6 +161,8 @@ impl Backend for LocalBackend {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Context;
+
     use super::*;
     use crate::config::RepositoryRef;
     use crate::proto::benchmark::{
@@ -192,82 +194,83 @@ mod tests {
     }
 
     #[test]
-    fn test_save_load_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_save_load_roundtrip() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
 
         let benches = vec![make_set("foo", 1_000_000.0)];
-        store.save("abc123", &benches).unwrap();
+        store.save("abc123", &benches)?;
 
-        let loaded = store.load("abc123").unwrap();
-        assert!(loaded.is_some());
-        let loaded = loaded.unwrap();
+        let loaded = store.load("abc123")?.context("expected a snapshot")?;
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].benchmarks[0].name, "foo");
+        Ok(())
     }
 
     #[test]
-    fn test_load_missing_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_load_missing_returns_none() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
-        let result = store.load("nonexistent").unwrap();
+        let result = store.load("nonexistent")?;
         assert!(result.is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_previous_before_picks_correct_commit() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_previous_before_picks_correct_commit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
 
-        store.save("commit1", &[make_set("a", 1.0)]).unwrap();
+        store.save("commit1", &[make_set("a", 1.0)])?;
         std::thread::sleep(std::time::Duration::from_millis(10));
-        store.save("commit2", &[make_set("a", 2.0)]).unwrap();
+        store.save("commit2", &[make_set("a", 2.0)])?;
 
-        let prev = store.previous_before("commit2").unwrap();
-        assert!(prev.is_some());
-        let prev = prev.unwrap();
+        let prev = store
+            .previous_before("commit2")?
+            .context("expected a previous commit")?;
         assert_eq!(statistic_mean_ns(&prev[0].benchmarks[0]), Some(1.0));
+        Ok(())
     }
 
     #[test]
-    fn test_previous_before_no_other_commit() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_previous_before_no_other_commit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
 
-        store.save("only", &[make_set("a", 1.0)]).unwrap();
-        let prev = store.previous_before("only").unwrap();
+        store.save("only", &[make_set("a", 1.0)])?;
+        let prev = store.previous_before("only")?;
         assert!(prev.is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_list_commits_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_list_commits_empty_dir() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
-        let commits = store.list_commits().unwrap();
+        let commits = store.list_commits()?;
         assert!(commits.is_empty());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_trend_filters_by_benchmark_name() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn test_trend_filters_by_benchmark_name() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let store = LocalBackend::with_root(dir.path());
 
-        store
-            .save(
-                "commit1",
-                &[make_set("kept", 1.0), make_set("filtered", 2.0)],
-            )
-            .unwrap();
+        store.save(
+            "commit1",
+            &[make_set("kept", 1.0), make_set("filtered", 2.0)],
+        )?;
 
         let points = store
             .trend(TrendQuery {
                 benchmark_name: Some("kept".to_string()),
                 limit: 50,
             })
-            .await
-            .unwrap();
+            .await?;
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].benchmark_name, "kept");
+        Ok(())
     }
 }

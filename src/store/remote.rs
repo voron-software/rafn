@@ -12,7 +12,7 @@ use crate::proto::pb::{
 
 use super::{Backend, TrendDataPoint, TrendQuery, require_repository};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RemoteBackend {
     endpoint: String,
     repository: Option<RepositoryRef>,
@@ -140,6 +140,7 @@ impl Backend for RemoteBackend {
     }
 }
 
+#[derive(Debug)]
 pub struct BenchmarkClient {
     inner: BenchmarkServiceClient<Channel>,
 }

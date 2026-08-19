@@ -283,22 +283,27 @@ fn first_cmake_executable(cmake: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::{Context, Result};
     use tempfile::TempDir;
 
-    fn write(path: &Path, content: &str) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
+    use super::*;
+
+    fn write(path: &Path, content: &str) -> Result<()> {
+        std::fs::create_dir_all(
+            path.parent()
+                .context("expected a parent directory for the test fixture path")?,
+        )?;
+        std::fs::write(path, content)?;
+        Ok(())
     }
 
     #[test]
-    fn detects_rust_criterion_and_passes_args() {
-        let tmp = TempDir::new().unwrap();
-        write(&tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n");
+    fn detects_rust_criterion_and_passes_args() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write(&tmp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n")?;
 
         let config =
-            detect_framework_from(tmp.path().to_path_buf(), &["--bench".into(), "core".into()])
-                .unwrap();
+            detect_framework_from(tmp.path().to_path_buf(), &["--bench".into(), "core".into()])?;
 
         assert_eq!(config.framework, Framework::RustCriterion);
         assert_eq!(config.commands[0].program, "cargo");
@@ -307,65 +312,68 @@ mod tests {
             config.results_strategy,
             ResultsStrategy::CriterionDirectory(tmp.path().join("target/criterion"))
         );
+        Ok(())
     }
 
     #[test]
-    fn detects_benchmarkdotnet_project() {
-        let tmp = TempDir::new().unwrap();
+    fn detects_benchmarkdotnet_project() -> Result<()> {
+        let tmp = TempDir::new()?;
         write(
             &tmp.path().join("Example.csproj"),
             r#"<PackageReference Include="BenchmarkDotNet" Version="0.14.0" />"#,
-        );
+        )?;
 
         let config = detect_framework_from(tmp.path().to_path_buf(), &["--filter".into()])
-            .expect("detect benchmarkdotnet");
+            .context("detect benchmarkdotnet")?;
 
         assert_eq!(config.framework, Framework::DotNetBenchmarkDotNet);
         assert_eq!(config.commands[0].program, "dotnet");
         assert!(config.commands[0].args.contains(&"--filter".to_string()));
+        Ok(())
     }
 
     #[test]
-    fn detects_jmh_project() {
-        let tmp = TempDir::new().unwrap();
+    fn detects_jmh_project() -> Result<()> {
+        let tmp = TempDir::new()?;
         write(
             &tmp.path().join("pom.xml"),
             "<artifactId>jmh-core</artifactId>",
-        );
+        )?;
 
-        let config = detect_framework_from(tmp.path().to_path_buf(), &[]).unwrap();
+        let config = detect_framework_from(tmp.path().to_path_buf(), &[])?;
 
         assert_eq!(config.framework, Framework::JavaJmh);
         assert_eq!(config.commands.len(), 2);
         assert_eq!(config.commands[1].args[0], "-jar");
+        Ok(())
     }
 
     #[test]
-    fn nearest_project_marker_wins() {
-        let tmp = TempDir::new().unwrap();
+    fn nearest_project_marker_wins() -> Result<()> {
+        let tmp = TempDir::new()?;
         write(
             &tmp.path().join("Cargo.toml"),
             "[package]\nname = \"root\"\n",
-        );
+        )?;
         let nested = tmp.path().join("examples/java");
-        write(&nested.join("pom.xml"), "<artifactId>jmh-core</artifactId>");
+        write(&nested.join("pom.xml"), "<artifactId>jmh-core</artifactId>")?;
 
-        let config = detect_framework_from(nested, &[]).unwrap();
+        let config = detect_framework_from(nested, &[])?;
 
         assert_eq!(config.framework, Framework::JavaJmh);
+        Ok(())
     }
 
     #[test]
-    fn detects_google_benchmark_project() {
-        let tmp = TempDir::new().unwrap();
+    fn detects_google_benchmark_project() -> Result<()> {
+        let tmp = TempDir::new()?;
         write(
             &tmp.path().join("CMakeLists.txt"),
             "add_executable(fibonacci_benchmark fibonacci_benchmark.cpp)\ntarget_link_libraries(fibonacci_benchmark benchmark::benchmark_main)",
-        );
+        )?;
 
         let config =
-            detect_framework_from(tmp.path().to_path_buf(), &["--benchmark_filter=Fib".into()])
-                .unwrap();
+            detect_framework_from(tmp.path().to_path_buf(), &["--benchmark_filter=Fib".into()])?;
 
         assert_eq!(config.framework, Framework::CppGoogleBenchmark);
         assert_eq!(config.commands.len(), 3);
@@ -381,31 +389,38 @@ mod tests {
                 .args
                 .contains(&"--benchmark_filter=Fib".to_string())
         );
+        Ok(())
     }
 
     #[test]
-    fn unknown_project_errors() {
-        let tmp = TempDir::new().unwrap();
-        let err = detect_framework_from(tmp.path().to_path_buf(), &[]).unwrap_err();
+    fn unknown_project_errors() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let Err(err) = detect_framework_from(tmp.path().to_path_buf(), &[]) else {
+            anyhow::bail!("expected detection to fail");
+        };
         assert!(err.to_string().contains("No supported benchmark framework"));
+        Ok(())
     }
 
     #[test]
-    fn multiple_benchmarkdotnet_projects_error() {
-        let tmp = TempDir::new().unwrap();
+    fn multiple_benchmarkdotnet_projects_error() -> Result<()> {
+        let tmp = TempDir::new()?;
         write(
             &tmp.path().join("One.csproj"),
             r#"<PackageReference Include="BenchmarkDotNet" Version="0.14.0" />"#,
-        );
+        )?;
         write(
             &tmp.path().join("Two.csproj"),
             r#"<PackageReference Include="BenchmarkDotNet" Version="0.14.0" />"#,
-        );
+        )?;
 
-        let err = detect_framework_from(tmp.path().to_path_buf(), &[]).unwrap_err();
+        let Err(err) = detect_framework_from(tmp.path().to_path_buf(), &[]) else {
+            anyhow::bail!("expected detection to fail");
+        };
         assert!(
             err.to_string()
                 .contains("Multiple BenchmarkDotNet projects")
         );
+        Ok(())
     }
 }

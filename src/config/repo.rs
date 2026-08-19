@@ -168,34 +168,39 @@ fn find_rafn_toml(start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::Result;
     use std::fs;
 
+    use super::*;
+
     #[test]
-    fn test_find_rafn_toml_at_start() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_find_rafn_toml_at_start() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
-        fs::write(root.join("rafn.toml"), "").unwrap();
+        fs::write(root.join("rafn.toml"), "")?;
         assert_eq!(find_rafn_toml(root), Some(root.join("rafn.toml")));
+        Ok(())
     }
 
     #[test]
-    fn test_find_rafn_toml_in_ancestor() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_find_rafn_toml_in_ancestor() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
         let sub = root.join("a").join("b");
-        fs::create_dir_all(&sub).unwrap();
-        fs::write(root.join("rafn.toml"), "").unwrap();
+        fs::create_dir_all(&sub)?;
+        fs::write(root.join("rafn.toml"), "")?;
         assert_eq!(find_rafn_toml(&sub), Some(root.join("rafn.toml")));
+        Ok(())
     }
 
     #[test]
-    fn test_find_rafn_toml_not_found() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_find_rafn_toml_not_found() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let sub = dir.path().join("a").join("b");
-        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir_all(&sub)?;
         // No rafn.toml anywhere in `dir`'s ancestry (assumed for a fresh tempdir).
         assert_eq!(find_rafn_toml(&sub), None);
+        Ok(())
     }
 
     #[test]
@@ -206,17 +211,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_local_backend() {
+    fn test_parse_local_backend() -> Result<()> {
         let toml = r#"
 [backend]
 type = "local"
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert_eq!(cfg.backend.backend_type, BackendType::Local);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_cloud_api_url() {
+    fn test_parse_cloud_api_url() -> Result<()> {
         let toml = r#"
 [backend]
 type = "cloud"
@@ -224,19 +230,20 @@ type = "cloud"
 [backend.cloud]
 api_url = "https://api.rafn.dev"
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
         assert_eq!(cfg.cloud_api_url(), Some("https://api.rafn.dev"));
+        Ok(())
     }
 
     #[test]
-    fn test_parse_project_repository() {
+    fn test_parse_project_repository() -> Result<()> {
         let toml = r#"
 [project.repository]
 owner = "acme"
 repository = "perf-suite"
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert_eq!(
             cfg.project_repository(),
             Some(&RepositoryRef {
@@ -245,31 +252,34 @@ repository = "perf-suite"
                 repository: "perf-suite".to_string(),
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_project_repository_with_forge() {
+    fn test_parse_project_repository_with_forge() -> Result<()> {
         let toml = r#"
 [project.repository]
 forge = "gitlab.com"
 owner = "acme"
 repository = "perf-suite"
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert_eq!(
             cfg.project_repository().map(|r| r.forge.as_str()),
             Some("gitlab.com")
         );
+        Ok(())
     }
 
     #[test]
-    fn test_parse_bench_threshold() {
+    fn test_parse_bench_threshold() -> Result<()> {
         let toml = r#"
 [bench]
 threshold = 10.0
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert_eq!(cfg.bench_threshold(), 10.0);
+        Ok(())
     }
 
     #[test]
@@ -279,15 +289,16 @@ threshold = 10.0
     }
 
     #[test]
-    fn test_missing_optional_sections() {
+    fn test_missing_optional_sections() -> Result<()> {
         let toml = r#"
 [backend]
 type = "local"
 "#;
-        let cfg: RepoConfig = toml::from_str(toml).unwrap();
+        let cfg: RepoConfig = toml::from_str(toml)?;
         assert!(cfg.cloud_api_url().is_none());
         assert!(cfg.project_repository().is_none());
         assert_eq!(cfg.bench_threshold(), 5.0);
+        Ok(())
     }
 
     #[test]
@@ -301,15 +312,16 @@ type = "remote"
     }
 
     #[test]
-    fn test_build_with_no_file_uses_defaults() {
-        let cfg = RepoConfig::build(None).unwrap();
+    fn test_build_with_no_file_uses_defaults() -> Result<()> {
+        let cfg = RepoConfig::build(None)?;
         assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
         assert!(cfg.project_repository().is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_build_reads_toml_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_build_reads_toml_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("rafn.toml");
         fs::write(
             &path,
@@ -321,20 +333,20 @@ type = "local"
 owner = "acme"
 repository = "perf-suite"
 "#,
-        )
-        .unwrap();
+        )?;
 
-        let cfg = RepoConfig::build(Some(&path)).unwrap();
+        let cfg = RepoConfig::build(Some(&path))?;
         assert_eq!(cfg.backend.backend_type, BackendType::Local);
         assert_eq!(
             cfg.project_repository().map(|r| r.owner.as_str()),
             Some("acme")
         );
+        Ok(())
     }
 
     #[test]
-    fn test_env_override_for_project_repository_owner() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_env_override_for_project_repository_owner() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("rafn.toml");
         fs::write(
             &path,
@@ -343,8 +355,7 @@ repository = "perf-suite"
 owner = "from-file"
 repository = "perf-suite"
 "#,
-        )
-        .unwrap();
+        )?;
 
         // Inject a fake environment rather than mutating real process env
         // vars, so this test can't race with others reading RAFN_* vars.
@@ -358,10 +369,11 @@ repository = "perf-suite"
             .separator("__")
             .source(Some(env));
 
-        let cfg = RepoConfig::build_with_env(Some(&path), env_source).unwrap();
+        let cfg = RepoConfig::build_with_env(Some(&path), env_source)?;
         assert_eq!(
             cfg.project_repository().map(|r| r.owner.as_str()),
             Some("from-env")
         );
+        Ok(())
     }
 }

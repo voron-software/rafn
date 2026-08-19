@@ -129,6 +129,8 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     #[test]
@@ -138,15 +140,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_set() {
+    fn test_get_set() -> Result<()> {
         let mut config = Config::default();
-        config
-            .set("cloud.api_url", "http://grpc.example.com:50051")
-            .unwrap();
+        config.set("cloud.api_url", "http://grpc.example.com:50051")?;
         assert_eq!(
-            config.get("cloud.api_url").unwrap(),
+            config.get("cloud.api_url").context("expected value")?,
             "http://grpc.example.com:50051"
         );
+        Ok(())
     }
 
     #[test]
@@ -157,50 +158,54 @@ mod tests {
     }
 
     #[test]
-    fn test_load_missing_file_returns_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_load_missing_file_returns_defaults() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
 
-        let config = Config::load_from(&path).unwrap();
+        let config = Config::load_from(&path)?;
         assert_eq!(config, Config::default());
+        Ok(())
     }
 
     #[test]
-    fn test_load_reads_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_load_reads_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[cloud]\napi_url = \"https://file.example.com\"\n").unwrap();
+        fs::write(&path, "[cloud]\napi_url = \"https://file.example.com\"\n")?;
 
-        let config = Config::load_from(&path).unwrap();
+        let config = Config::load_from(&path)?;
         assert_eq!(config.cloud.api_url, "https://file.example.com");
+        Ok(())
     }
 
     #[test]
-    fn test_init_at_writes_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_init_at_writes_defaults() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
 
-        let config = Config::init_at(&path).unwrap();
+        let config = Config::init_at(&path)?;
         assert_eq!(config, Config::default());
-        assert_eq!(Config::load_from(&path).unwrap(), Config::default());
+        assert_eq!(Config::load_from(&path)?, Config::default());
+        Ok(())
     }
 
     #[test]
-    fn test_init_at_refuses_to_overwrite_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_init_at_refuses_to_overwrite_existing_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[cloud]\napi_url = \"https://custom.example.com\"\n").unwrap();
+        fs::write(&path, "[cloud]\napi_url = \"https://custom.example.com\"\n")?;
 
         assert!(Config::init_at(&path).is_err());
         assert_eq!(
-            fs::read_to_string(&path).unwrap(),
+            fs::read_to_string(&path)?,
             "[cloud]\napi_url = \"https://custom.example.com\"\n"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_env_override_flows_through_load() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_env_override_flows_through_load() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("config.toml");
 
         // Inject a fake environment rather than mutating real process env
@@ -215,7 +220,8 @@ mod tests {
             .separator("__")
             .source(Some(env));
 
-        let config = Config::load_from_with_env(&path, env_source).unwrap();
+        let config = Config::load_from_with_env(&path, env_source)?;
         assert_eq!(config.cloud.api_url, "https://env.example.com");
+        Ok(())
     }
 }

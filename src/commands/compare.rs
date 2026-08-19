@@ -12,7 +12,7 @@ use crate::comparison;
 use crate::proto::pb::BenchmarkSet;
 use crate::store::{self, Backend};
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct CompareCommand {
     /// Base commit SHA
     #[arg(long)]
@@ -61,6 +61,9 @@ impl CompareCommand {
     }
 }
 
+// stdout is this CLI's output contract, not debug noise — users pipe/read it
+// directly, unlike `tracing`'s log lines.
+#[allow(clippy::print_stdout)]
 fn output_results(
     format: OutputFormat,
     base: Vec<BenchmarkSet>,
