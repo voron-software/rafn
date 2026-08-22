@@ -13,7 +13,7 @@ use tracing::info;
 
 use crate::store::{self, Backend, TrendDataPoint, TrendQuery};
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct TrendCommand {
     /// Benchmark name. When omitted, all benchmarks are shown.
     #[arg(short, long)]
@@ -35,6 +35,9 @@ pub enum OutputFormat {
 }
 
 impl TrendCommand {
+    // stdout is this CLI's output contract, not debug noise — users pipe/read it
+    // directly, unlike `tracing`'s log lines.
+    #[allow(clippy::print_stdout)]
     pub async fn execute(self) -> Result<()> {
         let backend = store::selected_backend()?;
 
@@ -64,6 +67,9 @@ impl TrendCommand {
         self.output(data_points)
     }
 
+    // stdout is this CLI's output contract, not debug noise — users pipe/read it
+    // directly, unlike `tracing`'s log lines.
+    #[allow(clippy::print_stdout)]
     fn output(self, data_points: Vec<TrendDataPoint>) -> Result<()> {
         match self.format {
             OutputFormat::Table => {

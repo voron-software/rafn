@@ -15,7 +15,7 @@ use crate::config::RepoConfig;
 const RAFN_TOML_CONTENTS: &str = "[backend]\ntype = \"cloud\"\n";
 const GITIGNORE_ENTRY: &str = ".rafn/snapshots";
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct InitCommand;
 
 impl InitCommand {
@@ -24,6 +24,9 @@ impl InitCommand {
     }
 }
 
+// stdout is this CLI's output contract, not debug noise — users pipe/read it
+// directly, unlike `tracing`'s log lines.
+#[allow(clippy::print_stdout)]
 fn init_in(dir: &Path) -> Result<()> {
     // Walk up the same way `RepoConfig::load` does: a `rafn.toml` in an
     // ancestor directory already governs this subdirectory, so scaffolding a
@@ -94,105 +97,113 @@ fn update_gitignore(dir: &Path) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::Result;
     use std::process::Command;
 
-    fn git_init(dir: &Path) {
+    use super::*;
+
+    fn git_init(dir: &Path) -> Result<()> {
         let status = Command::new("git")
             .args(["init", "--quiet"])
             .current_dir(dir)
-            .status()
-            .unwrap();
+            .status()?;
         assert!(status.success());
+        Ok(())
     }
 
     #[test]
-    fn test_creates_rafn_toml_with_cloud_backend() {
-        let dir = tempfile::tempdir().unwrap();
-        init_in(dir.path()).unwrap();
+    fn test_creates_rafn_toml_with_cloud_backend() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        init_in(dir.path())?;
 
-        let contents = fs::read_to_string(dir.path().join("rafn.toml")).unwrap();
+        let contents = fs::read_to_string(dir.path().join("rafn.toml"))?;
         assert_eq!(contents, "[backend]\ntype = \"cloud\"\n");
+        Ok(())
     }
 
     #[test]
-    fn test_refuses_to_overwrite_existing_rafn_toml() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_refuses_to_overwrite_existing_rafn_toml() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("rafn.toml");
-        fs::write(&path, "[backend]\ntype = \"local\"\n").unwrap();
+        fs::write(&path, "[backend]\ntype = \"local\"\n")?;
 
         let result = init_in(dir.path());
         assert!(result.is_err());
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "[backend]\ntype = \"local\"\n"
-        );
+        assert_eq!(fs::read_to_string(&path)?, "[backend]\ntype = \"local\"\n");
+        Ok(())
     }
 
     #[test]
-    fn test_refuses_when_ancestor_has_rafn_toml() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_refuses_when_ancestor_has_rafn_toml() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let root = dir.path();
-        fs::write(root.join("rafn.toml"), "[backend]\ntype = \"local\"\n").unwrap();
+        fs::write(root.join("rafn.toml"), "[backend]\ntype = \"local\"\n")?;
         let sub = root.join("a").join("b");
-        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir_all(&sub)?;
 
         let result = init_in(&sub);
         assert!(result.is_err());
         assert!(!sub.join("rafn.toml").exists());
+        Ok(())
     }
 
     #[test]
-    fn test_skips_gitignore_in_non_git_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        init_in(dir.path()).unwrap();
+    fn test_skips_gitignore_in_non_git_directory() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        init_in(dir.path())?;
 
         assert!(!dir.path().join(".gitignore").exists());
+        Ok(())
     }
 
     #[test]
-    fn test_creates_gitignore_in_git_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        git_init(dir.path());
+    fn test_creates_gitignore_in_git_directory() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        git_init(dir.path())?;
 
-        init_in(dir.path()).unwrap();
+        init_in(dir.path())?;
 
-        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore"))?;
         assert_eq!(contents, ".rafn/snapshots\n");
+        Ok(())
     }
 
     #[test]
-    fn test_appends_to_existing_gitignore_without_trailing_newline() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "/target").unwrap();
+    fn test_appends_to_existing_gitignore_without_trailing_newline() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join(".gitignore"), "/target")?;
 
-        assert!(update_gitignore(dir.path()).unwrap());
+        assert!(update_gitignore(dir.path())?);
 
-        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore"))?;
         assert_eq!(contents, "/target\n.rafn/snapshots\n");
+        Ok(())
     }
 
     #[test]
-    fn test_gitignore_update_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(".gitignore"), "/target\n.rafn/snapshots\n").unwrap();
+    fn test_gitignore_update_is_idempotent() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join(".gitignore"), "/target\n.rafn/snapshots\n")?;
 
-        assert!(!update_gitignore(dir.path()).unwrap());
+        assert!(!update_gitignore(dir.path())?);
 
-        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore"))?;
         assert_eq!(contents, "/target\n.rafn/snapshots\n");
+        Ok(())
     }
 
     #[test]
-    fn test_is_git_repo_false_for_plain_directory() {
-        let dir = tempfile::tempdir().unwrap();
+    fn test_is_git_repo_false_for_plain_directory() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         assert!(!is_git_repo(dir.path()));
+        Ok(())
     }
 
     #[test]
-    fn test_is_git_repo_true_after_git_init() {
-        let dir = tempfile::tempdir().unwrap();
-        git_init(dir.path());
+    fn test_is_git_repo_true_after_git_init() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        git_init(dir.path())?;
         assert!(is_git_repo(dir.path()));
+        Ok(())
     }
 }

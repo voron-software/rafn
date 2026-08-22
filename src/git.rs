@@ -8,6 +8,7 @@ use url::Url;
 use crate::config::RepositoryRef;
 
 /// Git repository information.
+#[derive(Debug)]
 pub struct GitInfo {
     pub repository: Option<RepositoryRef>,
     pub commit_sha: Option<String>,

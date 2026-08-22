@@ -4,6 +4,9 @@ use rafn::ingest::BenchmarkParser;
 use rafn::ingest::parsers::criterion::CriterionParser;
 use std::hint::black_box;
 
+// `parse` is the operation under measurement, so its fallibility can't be
+// hoisted out of the timed closure the way benchmark setup normally would be.
+#[allow(clippy::unwrap_used)]
 fn criterion_parser_benchmark(c: &mut Criterion) {
     let sample_json = r#"{
         "reason": "benchmark-complete",

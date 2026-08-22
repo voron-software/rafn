@@ -38,6 +38,8 @@ impl RepositoryRef {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
+
     use super::*;
 
     #[test]
@@ -64,23 +66,25 @@ mod tests {
     }
 
     #[test]
-    fn forge_defaults_to_github_when_absent() {
+    fn forge_defaults_to_github_when_absent() -> Result<()> {
         let toml = r#"
 owner = "acme"
 repository = "perf-suite"
 "#;
-        let r: RepositoryRef = toml::from_str(toml).unwrap();
+        let r: RepositoryRef = toml::from_str(toml)?;
         assert_eq!(r.forge, "github.com");
+        Ok(())
     }
 
     #[test]
-    fn forge_is_read_when_present() {
+    fn forge_is_read_when_present() -> Result<()> {
         let toml = r#"
 forge = "gitlab.com"
 owner = "acme"
 repository = "perf-suite"
 "#;
-        let r: RepositoryRef = toml::from_str(toml).unwrap();
+        let r: RepositoryRef = toml::from_str(toml)?;
         assert_eq!(r.forge, "gitlab.com");
+        Ok(())
     }
 }

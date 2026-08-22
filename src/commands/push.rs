@@ -11,7 +11,7 @@ use crate::config::{BackendType, RepoConfig};
 use crate::git;
 use crate::store;
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct PushCommand {
     /// Commit SHA to push (auto-detected from git if not specified).
     /// Push all stored snapshots with --all.

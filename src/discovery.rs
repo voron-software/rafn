@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::framework::ResultsStrategy;
 
+#[derive(Debug)]
 pub struct BenchmarkResult {
     pub name: String,
     pub data: Value,
@@ -106,10 +107,16 @@ fn parse_criterion_benchmark(
     )
     .context("Failed to parse benchmark.json")?;
 
-    let full_id = benchmark_info["full_id"]
-        .as_str()
-        .unwrap_or_else(|| path.file_name().unwrap().to_str().unwrap())
-        .to_string();
+    let full_id = match benchmark_info["full_id"].as_str() {
+        Some(id) => id.to_string(),
+        // Criterion's benchmark.json omits `full_id` on older versions; the
+        // leaf directory name is the same identifier in that case.
+        None => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .with_context(|| format!("could not determine benchmark id for {}", path.display()))?
+            .to_string(),
+    };
 
     let sample_file = path.join("new").join("sample.json");
     let total_iterations: u64 = if sample_file.exists() {
@@ -192,56 +199,58 @@ fn read_json_file(path: &Path) -> Result<BenchmarkResult> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use anyhow::Result;
     use tempfile::TempDir;
 
-    fn write_criterion_benchmark(dir: &Path, bench_name: &str, full_id: &str) {
+    use super::*;
+
+    fn write_criterion_benchmark(dir: &Path, bench_name: &str, full_id: &str) -> Result<()> {
         let new_dir = dir.join(bench_name).join("new");
-        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::create_dir_all(&new_dir)?;
         std::fs::write(
             new_dir.join("estimates.json"),
             r#"{"mean":{"point_estimate":1000.0,"confidence_interval":{"lower_bound":900.0,"upper_bound":1100.0}},"median":{"point_estimate":990.0,"confidence_interval":{"lower_bound":880.0,"upper_bound":1080.0}},"std_dev":{"point_estimate":50.0,"confidence_interval":{"lower_bound":40.0,"upper_bound":60.0}}}"#,
-        )
-        .unwrap();
+        )?;
         std::fs::write(
             new_dir.join("benchmark.json"),
-            format!(r#"{{"full_id":"{full_id}","group_id":null,"function_id":null,"value_str":null,"throughput":[]}}"#),
-        )
-        .unwrap();
+            format!(
+                r#"{{"full_id":"{full_id}","group_id":null,"function_id":null,"value_str":null,"throughput":[]}}"#
+            ),
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn criterion_scan_finds_flat_benchmarks() {
-        let tmp = TempDir::new().unwrap();
+    fn criterion_scan_finds_flat_benchmarks() -> Result<()> {
+        let tmp = TempDir::new()?;
         let criterion_dir = tmp.path().join("target/criterion");
-        write_criterion_benchmark(&criterion_dir, "my_bench", "my_bench");
+        write_criterion_benchmark(&criterion_dir, "my_bench", "my_bench")?;
 
-        let results =
-            discover_results(&ResultsStrategy::CriterionDirectory(criterion_dir), None).unwrap();
+        let results = discover_results(&ResultsStrategy::CriterionDirectory(criterion_dir), None)?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "my_bench");
+        Ok(())
     }
 
     #[test]
-    fn criterion_scan_finds_grouped_benchmarks() {
+    fn criterion_scan_finds_grouped_benchmarks() -> Result<()> {
         // Criterion writes benchmark_group("grp") + bench_function("sub") as:
         //   target/criterion/grp/sub/new/estimates.json
         // The old one-level scan missed these entirely.
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new()?;
         let criterion_dir = tmp.path().join("target/criterion");
 
         // flat benchmark at depth 1
-        write_criterion_benchmark(&criterion_dir, "flat_bench", "flat_bench");
+        write_criterion_benchmark(&criterion_dir, "flat_bench", "flat_bench")?;
 
         // grouped benchmark at depth 2
-        write_criterion_benchmark(&criterion_dir.join("grp"), "sub", "grp/sub");
+        write_criterion_benchmark(&criterion_dir.join("grp"), "sub", "grp/sub")?;
 
         // decoy: a directory with no estimates.json (e.g. Criterion's report dir)
-        std::fs::create_dir_all(criterion_dir.join("report")).unwrap();
+        std::fs::create_dir_all(criterion_dir.join("report"))?;
 
-        let results =
-            discover_results(&ResultsStrategy::CriterionDirectory(criterion_dir), None).unwrap();
+        let results = discover_results(&ResultsStrategy::CriterionDirectory(criterion_dir), None)?;
 
         assert_eq!(
             results.len(),
@@ -252,29 +261,33 @@ mod tests {
         let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"flat_bench"), "flat benchmark missing");
         assert!(names.contains(&"grp/sub"), "grouped benchmark missing");
+        Ok(())
     }
 
     #[test]
-    fn discovers_json_file() {
-        let tmp = TempDir::new().unwrap();
+    fn discovers_json_file() -> Result<()> {
+        let tmp = TempDir::new()?;
         let path = tmp.path().join("jmh.json");
-        std::fs::write(&path, r#"[{"benchmark":"x","primaryMetric":{"score":1.0,"scoreError":0.0,"scoreUnit":"ns/op"}}]"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"[{"benchmark":"x","primaryMetric":{"score":1.0,"scoreError":0.0,"scoreUnit":"ns/op"}}]"#,
+        )?;
 
-        let results = discover_results(&ResultsStrategy::JsonFile(path), None).unwrap();
+        let results = discover_results(&ResultsStrategy::JsonFile(path), None)?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "jmh.json");
+        Ok(())
     }
 
     #[test]
-    fn discovers_json_directory_with_suffix() {
-        let tmp = TempDir::new().unwrap();
+    fn discovers_json_directory_with_suffix() -> Result<()> {
+        let tmp = TempDir::new()?;
         std::fs::write(
             tmp.path().join("keep-report-full.json"),
             r#"{"Benchmarks":[]}"#,
-        )
-        .unwrap();
-        std::fs::write(tmp.path().join("skip.json"), r#"{"Benchmarks":[]}"#).unwrap();
+        )?;
+        std::fs::write(tmp.path().join("skip.json"), r#"{"Benchmarks":[]}"#)?;
 
         let results = discover_results(
             &ResultsStrategy::JsonDirectory {
@@ -282,25 +295,25 @@ mod tests {
                 required_suffix: Some("-report-full.json".into()),
             },
             None,
-        )
-        .unwrap();
+        )?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "keep-report-full.json");
+        Ok(())
     }
 
     #[test]
-    fn json_file_strategy_accepts_directory_override() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("result.json"), r#"{"benchmarks":[]}"#).unwrap();
+    fn json_file_strategy_accepts_directory_override() -> Result<()> {
+        let tmp = TempDir::new()?;
+        std::fs::write(tmp.path().join("result.json"), r#"{"benchmarks":[]}"#)?;
 
         let results = discover_results(
             &ResultsStrategy::JsonFile(tmp.path().join("default.json")),
             Some(tmp.path()),
-        )
-        .unwrap();
+        )?;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "result.json");
+        Ok(())
     }
 }

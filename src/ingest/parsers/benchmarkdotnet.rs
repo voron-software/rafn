@@ -5,6 +5,7 @@ use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics
 use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 
+#[derive(Debug)]
 pub struct BenchmarkDotNetParser {
     repository: RepositoryRef,
     commit_sha: String,
@@ -129,6 +130,8 @@ impl BenchmarkParser for BenchmarkDotNetParser {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     fn test_repository() -> RepositoryRef {
@@ -150,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_benchmark() {
+    fn test_single_benchmark() -> Result<()> {
         let json = r#"{
             "Benchmarks": [{
                 "Method": "TestMethod",
@@ -166,22 +169,23 @@ mod tests {
         let parser = make_parser();
 
         assert!(parser.can_parse(json));
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets.len(), 1);
 
         let b = &sets[0].benchmarks[0];
         assert_eq!(b.name, "MyNamespace.MyClass.TestMethod");
-        let stats = b.statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
-        assert!((stats.stddev.unwrap() - 50.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 1400.0).abs() < f64::EPSILON);
+        let stats = b.statistics.as_ref().context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.context("expected stddev")? - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 1400.0).abs() < f64::EPSILON);
         assert_eq!(stats.sample_count, Some(100));
+        Ok(())
     }
 
     #[test]
-    fn test_multiple_benchmarks() {
+    fn test_multiple_benchmarks() -> Result<()> {
         let json = r#"{
             "Benchmarks": [
                 {
@@ -195,14 +199,15 @@ mod tests {
             ]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
+        let benchmarks = make_parser().parse(json)?;
         assert_eq!(benchmarks[0].benchmarks.len(), 2);
         assert_eq!(benchmarks[0].benchmarks[0].name, "MyClass.Method1");
         assert_eq!(benchmarks[0].benchmarks[1].name, "MyClass.Method2");
+        Ok(())
     }
 
     #[test]
-    fn test_name_with_display_info() {
+    fn test_name_with_display_info() -> Result<()> {
         let json = r#"{
             "Benchmarks": [{
                 "Method": "TestMethod", "DisplayInfo": "Custom Display Name",
@@ -211,12 +216,13 @@ mod tests {
             }]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
+        let benchmarks = make_parser().parse(json)?;
         assert_eq!(benchmarks[0].benchmarks[0].name, "Custom Display Name");
+        Ok(())
     }
 
     #[test]
-    fn test_name_with_parameters() {
+    fn test_name_with_parameters() -> Result<()> {
         let json = r#"{
             "Benchmarks": [{
                 "Method": "TestMethod", "Type": "MyClass", "Parameters": "N=100, Size=1024",
@@ -224,15 +230,16 @@ mod tests {
             }]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
+        let benchmarks = make_parser().parse(json)?;
         assert_eq!(
             benchmarks[0].benchmarks[0].name,
             "MyClass.TestMethod: N=100, Size=1024"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_name_with_display_info_and_parameters() {
+    fn test_name_with_display_info_and_parameters() -> Result<()> {
         let json = r#"{
             "Benchmarks": [{
                 "Method": "TestMethod", "DisplayInfo": "Custom Name",
@@ -241,8 +248,9 @@ mod tests {
             }]
         }"#;
 
-        let benchmarks = make_parser().parse(json).unwrap();
+        let benchmarks = make_parser().parse(json)?;
         assert_eq!(benchmarks[0].benchmarks[0].name, "Custom Name: N=100");
+        Ok(())
     }
 
     #[test]

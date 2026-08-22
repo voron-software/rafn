@@ -9,6 +9,7 @@ use crate::framework::ProcessCommand;
 
 /// Result of running a benchmark command.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct RunResult {
     pub exit_status: ExitStatus,
     pub stdout: String,
@@ -25,8 +26,15 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         .spawn()
         .with_context(|| format!("Failed to spawn: {}", command.display()))?;
 
-    let stdout_pipe = child.stdout.take().unwrap();
-    let stderr_pipe = child.stderr.take().unwrap();
+    // `Stdio::piped()` above guarantees these are `Some` on first `take()`.
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .context("child stdout pipe missing despite Stdio::piped()")?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .context("child stderr pipe missing despite Stdio::piped()")?;
 
     // Stream stdout in a separate thread.
     let stdout_handle = std::thread::spawn(move || {

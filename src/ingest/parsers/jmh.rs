@@ -9,6 +9,7 @@ use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct JmhParser {
     repository: RepositoryRef,
     commit_sha: String,
@@ -196,6 +197,8 @@ impl BenchmarkParser for JmhParser {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     fn test_repository() -> RepositoryRef {
@@ -217,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jmh_parser_single_benchmark() {
+    fn test_jmh_parser_single_benchmark() -> Result<()> {
         let json = r#"[{
             "benchmark": "com.example.MyBenchmark.testMethod",
             "primaryMetric": {
@@ -236,21 +239,22 @@ mod tests {
 
         assert!(parser.can_parse(json));
 
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets.len(), 1);
 
         let b = &sets[0].benchmarks[0];
         assert_eq!(b.name, "com.example.MyBenchmark.testMethod");
-        let stats = b.statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 1400.0).abs() < f64::EPSILON);
-        assert!((stats.stddev.unwrap() - 50.0).abs() < 0.1);
+        let stats = b.statistics.as_ref().context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 1400.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.context("expected stddev")? - 50.0).abs() < 0.1);
+        Ok(())
     }
 
     #[test]
-    fn test_jmh_parser_unit_conversion_microseconds() {
+    fn test_jmh_parser_unit_conversion_microseconds() -> Result<()> {
         let json = r#"[{
             "benchmark": "com.example.MyBenchmark.testMethod",
             "primaryMetric": {
@@ -261,16 +265,20 @@ mod tests {
             }
         }]"#;
 
-        let sets = make_parser().parse(json).unwrap();
-        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 1500.0).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 1400.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 1100.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 1800.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json)?;
+        let stats = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 1500.0).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 1400.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 1100.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 1800.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_jmh_parser_unit_conversion_milliseconds() {
+    fn test_jmh_parser_unit_conversion_milliseconds() -> Result<()> {
         let json = r#"[{
             "benchmark": "com.example.MyBenchmark.testMethod",
             "primaryMetric": {
@@ -281,16 +289,20 @@ mod tests {
             }
         }]"#;
 
-        let sets = make_parser().parse(json).unwrap();
-        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 2_500_000.0).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 2_400_000.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 2_000_000.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 3_000_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json)?;
+        let stats = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 2_500_000.0).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 2_400_000.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 2_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 3_000_000.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_jmh_parser_unit_conversion_seconds() {
+    fn test_jmh_parser_unit_conversion_seconds() -> Result<()> {
         let json = r#"[{
             "benchmark": "com.example.MyBenchmark.testMethod",
             "primaryMetric": {
@@ -301,16 +313,20 @@ mod tests {
             }
         }]"#;
 
-        let sets = make_parser().parse(json).unwrap();
-        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 500_000_000.0).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 480_000_000.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 400_000_000.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 600_000_000.0).abs() < f64::EPSILON);
+        let sets = make_parser().parse(json)?;
+        let stats = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 500_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 480_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 400_000_000.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 600_000_000.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_jmh_parser_multiple_benchmarks() {
+    fn test_jmh_parser_multiple_benchmarks() -> Result<()> {
         let json = r#"[
             {
                 "benchmark": "com.example.Benchmark1.method1",
@@ -328,16 +344,23 @@ mod tests {
             }
         ]"#;
 
-        let sets = make_parser().parse(json).unwrap();
+        let sets = make_parser().parse(json)?;
         assert_eq!(sets[0].benchmarks.len(), 2);
-        let first = sets[0].benchmarks[0].statistics.as_ref().unwrap();
-        let second = sets[0].benchmarks[1].statistics.as_ref().unwrap();
-        assert!((first.mean.unwrap() - 1000.0).abs() < f64::EPSILON);
-        assert!((second.mean.unwrap() - 2000.0).abs() < f64::EPSILON);
+        let first = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        let second = sets[0].benchmarks[1]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        assert!((first.mean.context("expected mean")? - 1000.0).abs() < f64::EPSILON);
+        assert!((second.mean.context("expected mean")? - 2000.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_jmh_parser_missing_percentiles() {
+    fn test_jmh_parser_missing_percentiles() -> Result<()> {
         let json = r#"[{
             "benchmark": "com.example.MyBenchmark.testMethod",
             "primaryMetric": {
@@ -351,13 +374,17 @@ mod tests {
 
         assert!(parser.can_parse(json));
 
-        let sets = parser.parse(json).unwrap();
-        let stats = sets[0].benchmarks[0].statistics.as_ref().unwrap();
-        assert!((stats.median.unwrap() - 1234.5).abs() < f64::EPSILON);
+        let sets = parser.parse(json)?;
+        let stats = sets[0].benchmarks[0]
+            .statistics
+            .as_ref()
+            .context("expected statistics")?;
+        assert!((stats.median.context("expected median")? - 1234.5).abs() < f64::EPSILON);
         let expected_stddev = 50.0;
-        assert!((stats.stddev.unwrap() - expected_stddev).abs() < 0.1);
-        assert!((stats.min.unwrap() - (1234.5 - expected_stddev)).abs() < 0.1);
-        assert!((stats.max.unwrap() - (1234.5 + expected_stddev)).abs() < 0.1);
+        assert!((stats.stddev.context("expected stddev")? - expected_stddev).abs() < 0.1);
+        assert!((stats.min.context("expected min")? - (1234.5 - expected_stddev)).abs() < 0.1);
+        assert!((stats.max.context("expected max")? - (1234.5 + expected_stddev)).abs() < 0.1);
+        Ok(())
     }
 
     #[test]

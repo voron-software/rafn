@@ -43,6 +43,7 @@ pub(crate) trait Backend {
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>>;
 }
 
+#[derive(Debug)]
 pub enum SelectedBackend {
     Local(LocalBackend),
     Remote(RemoteBackend),
@@ -132,6 +133,8 @@ pub(crate) fn require_repository(effective: &EffectiveConfig) -> Result<Reposito
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
+
     use super::*;
     use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics};
 
@@ -160,19 +163,18 @@ mod tests {
     }
 
     #[test]
-    fn local_backend_anchors_to_project_root() {
-        let dir = tempfile::tempdir().unwrap();
+    fn local_backend_anchors_to_project_root() -> Result<()> {
+        let dir = tempfile::tempdir()?;
         let repo_config = RepoConfig {
             project_root: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
 
-        local_backend(&repo_config)
-            .save("abc123", &[make_set()])
-            .unwrap();
+        local_backend(&repo_config).save("abc123", &[make_set()])?;
 
         // Snapshot lands under the discovered root, not the process cwd.
         assert!(dir.path().join(".rafn/snapshots/abc123.pb").exists());
+        Ok(())
     }
 
     fn effective_with_repository(repository: Option<RepositoryRef>) -> EffectiveConfig {
@@ -185,9 +187,10 @@ mod tests {
     }
 
     #[test]
-    fn require_repository_returns_resolved_repository() {
+    fn require_repository_returns_resolved_repository() -> Result<()> {
         let effective = effective_with_repository(Some(test_repository()));
-        assert_eq!(require_repository(&effective).unwrap(), test_repository());
+        assert_eq!(require_repository(&effective)?, test_repository());
+        Ok(())
     }
 
     #[test]

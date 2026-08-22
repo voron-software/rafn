@@ -5,6 +5,7 @@ use crate::proto::benchmark::{benchmark_record, benchmark_set, metric_statistics
 use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 
+#[derive(Debug)]
 pub struct CriterionParser {
     repository: RepositoryRef,
     commit_sha: String,
@@ -105,6 +106,8 @@ impl BenchmarkParser for CriterionParser {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     fn test_repository() -> RepositoryRef {
@@ -116,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn test_criterion_parser() {
+    fn test_criterion_parser() -> Result<()> {
         let json = r#"{
             "id": "my_benchmark",
             "mean": {
@@ -152,29 +155,28 @@ mod tests {
 
         assert!(parser.can_parse(json));
 
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets.len(), 1);
 
         let set = &sets[0];
         assert_eq!(set.metric_name, "wall_time");
-        assert_eq!(set.source.as_ref().unwrap().commit_sha, "abc123");
-        assert_eq!(
-            set.source.as_ref().unwrap().branch,
-            Some("main".to_string())
-        );
+        let source = set.source.as_ref().context("expected source")?;
+        assert_eq!(source.commit_sha, "abc123");
+        assert_eq!(source.branch, Some("main".to_string()));
         let b = &set.benchmarks[0];
         assert_eq!(b.name, "my_benchmark");
-        let stats = b.statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 1234.5).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 1230.0).abs() < f64::EPSILON);
-        assert!((stats.stddev.unwrap() - 50.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 1180.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 1280.0).abs() < f64::EPSILON);
+        let stats = b.statistics.as_ref().context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 1234.5).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 1230.0).abs() < f64::EPSILON);
+        assert!((stats.stddev.context("expected stddev")? - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 1180.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 1280.0).abs() < f64::EPSILON);
         assert_eq!(stats.sample_count, Some(0));
+        Ok(())
     }
 
     #[test]
-    fn test_criterion_parser_with_iterations() {
+    fn test_criterion_parser_with_iterations() -> Result<()> {
         let json = r#"{
             "id": "my_benchmark",
             "mean": {
@@ -200,15 +202,16 @@ mod tests {
             prost_types::Timestamp::default(),
         );
 
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets.len(), 1);
         assert_eq!(
             sets[0].benchmarks[0]
                 .statistics
                 .as_ref()
-                .unwrap()
+                .context("expected statistics")?
                 .sample_count,
             Some(500)
         );
+        Ok(())
     }
 }

@@ -160,10 +160,12 @@ pub fn statistic_stddev_ns(benchmark: &pb::Benchmark) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     #[test]
-    fn benchmark_set_populates_source_from_repository_ref() {
+    fn benchmark_set_populates_source_from_repository_ref() -> Result<()> {
         let repository = RepositoryRef {
             forge: "gitlab.com".to_string(),
             owner: "acme".to_string(),
@@ -181,12 +183,13 @@ mod tests {
             Vec::new(),
         );
 
-        let source = set.source.unwrap();
+        let source = set.source.context("expected source to be set")?;
         assert_eq!(source.forge, "gitlab.com");
         assert_eq!(source.owner, "acme");
         assert_eq!(source.repository, "perf-suite");
         assert_eq!(source.commit_sha, "abc123");
         assert_eq!(source.branch, Some("main".to_string()));
+        Ok(())
     }
 
     #[test]

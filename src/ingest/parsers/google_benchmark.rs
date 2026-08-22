@@ -9,6 +9,7 @@ use crate::proto::pb::BenchmarkSet;
 use serde::Deserialize;
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct GoogleBenchmarkParser {
     repository: RepositoryRef,
     commit_sha: String,
@@ -142,6 +143,8 @@ impl BenchmarkParser for GoogleBenchmarkParser {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context, Result};
+
     use super::*;
 
     fn make_parser() -> GoogleBenchmarkParser {
@@ -159,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_benchmark_ns() {
+    fn test_single_benchmark_ns() -> Result<()> {
         let json = r#"{
             "context": { "date": "2024-01-01", "host_name": "test" },
             "benchmarks": [
@@ -177,20 +180,21 @@ mod tests {
         let parser = make_parser();
         assert!(parser.can_parse(json));
 
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets.len(), 1);
 
         let b = &sets[0].benchmarks[0];
         assert_eq!(b.name, "BM_Fibonacci/10");
-        let stats = b.statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 44.5).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 44.5).abs() < f64::EPSILON);
-        assert_eq!(stats.stddev.unwrap(), 0.0);
+        let stats = b.statistics.as_ref().context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 44.5).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 44.5).abs() < f64::EPSILON);
+        assert_eq!(stats.stddev.context("expected stddev")?, 0.0);
         assert_eq!(stats.min, stats.max);
+        Ok(())
     }
 
     #[test]
-    fn test_multiple_benchmarks() {
+    fn test_multiple_benchmarks() -> Result<()> {
         let json = r#"{
             "context": { "date": "2024-01-01" },
             "benchmarks": [
@@ -214,16 +218,17 @@ mod tests {
         }"#;
 
         let parser = make_parser();
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets[0].benchmarks.len(), 2);
 
         let names: Vec<&str> = sets[0].benchmarks.iter().map(|b| b.name.as_str()).collect();
         assert!(names.contains(&"BM_FibRecursive/10"));
         assert!(names.contains(&"BM_FibIterative/10"));
+        Ok(())
     }
 
     #[test]
-    fn test_time_unit_microseconds() {
+    fn test_time_unit_microseconds() -> Result<()> {
         let json = r#"{
             "context": {},
             "benchmarks": [
@@ -231,18 +236,19 @@ mod tests {
             ]
         }"#;
 
-        let sets = make_parser().parse(json).unwrap();
+        let sets = make_parser().parse(json)?;
         let mean = sets[0].benchmarks[0]
             .statistics
             .as_ref()
-            .unwrap()
+            .context("expected statistics")?
             .mean
-            .unwrap();
+            .context("expected mean")?;
         assert!((mean - 1500.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_time_unit_milliseconds() {
+    fn test_time_unit_milliseconds() -> Result<()> {
         let json = r#"{
             "context": {},
             "benchmarks": [
@@ -250,18 +256,19 @@ mod tests {
             ]
         }"#;
 
-        let sets = make_parser().parse(json).unwrap();
+        let sets = make_parser().parse(json)?;
         let mean = sets[0].benchmarks[0]
             .statistics
             .as_ref()
-            .unwrap()
+            .context("expected statistics")?
             .mean
-            .unwrap();
+            .context("expected mean")?;
         assert!((mean - 2_500_000.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_time_unit_seconds() {
+    fn test_time_unit_seconds() -> Result<()> {
         let json = r#"{
             "context": {},
             "benchmarks": [
@@ -269,18 +276,19 @@ mod tests {
             ]
         }"#;
 
-        let sets = make_parser().parse(json).unwrap();
+        let sets = make_parser().parse(json)?;
         let mean = sets[0].benchmarks[0]
             .statistics
             .as_ref()
-            .unwrap()
+            .context("expected statistics")?
             .mean
-            .unwrap();
+            .context("expected mean")?;
         assert!((mean - 500_000_000.0).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
-    fn test_repetitions_aggregate_rows_skipped() {
+    fn test_repetitions_aggregate_rows_skipped() -> Result<()> {
         let json = r#"{
             "context": {},
             "benchmarks": [
@@ -293,17 +301,18 @@ mod tests {
         }"#;
 
         let parser = make_parser();
-        let sets = parser.parse(json).unwrap();
+        let sets = parser.parse(json)?;
         assert_eq!(sets[0].benchmarks.len(), 1);
 
         let b = &sets[0].benchmarks[0];
         assert_eq!(b.name, "BM_Fib/10");
-        let stats = b.statistics.as_ref().unwrap();
-        assert!((stats.mean.unwrap() - 50.0).abs() < f64::EPSILON);
-        assert!((stats.median.unwrap() - 50.0).abs() < f64::EPSILON);
-        assert!((stats.min.unwrap() - 40.0).abs() < f64::EPSILON);
-        assert!((stats.max.unwrap() - 60.0).abs() < f64::EPSILON);
-        assert!(stats.stddev.unwrap() > 0.0);
+        let stats = b.statistics.as_ref().context("expected statistics")?;
+        assert!((stats.mean.context("expected mean")? - 50.0).abs() < f64::EPSILON);
+        assert!((stats.median.context("expected median")? - 50.0).abs() < f64::EPSILON);
+        assert!((stats.min.context("expected min")? - 40.0).abs() < f64::EPSILON);
+        assert!((stats.max.context("expected max")? - 60.0).abs() < f64::EPSILON);
+        assert!(stats.stddev.context("expected stddev")? > 0.0);
+        Ok(())
     }
 
     #[test]
