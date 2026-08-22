@@ -211,7 +211,9 @@ jobs:
       - name: Skip if already published
         id: crates-check
         run: |
+          # crates.io's data-access policy 403s requests with no identifying User-Agent
           code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "User-Agent: rafn-release-workflow (https://github.com/voron-software/rafn)" \
             "https://crates.io/api/v1/crates/rafn/${RELEASE_VERSION}")
           if [ "$code" = "200" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -221,7 +223,7 @@ jobs:
         if: ${{ !inputs.dry_run && steps.crates-check.outputs.skip != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --allow-dirty
+        run: cargo publish
 
   github-release:
     name: Create GitHub Release
@@ -379,9 +381,9 @@ jobs:
       - name: Submit update
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          RAFN_RELEASE_TOKEN: ${{ secrets.RAFN_RELEASE_TOKEN }}
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
           .\wingetcreate.exe update VoronSoftware.Rafn `
             --version $env:VERSION `
             --urls "https://github.com/voron-software/rafn/releases/download/v$($env:VERSION)/rafn-x86_64-pc-windows-msvc.zip" `
-            --submit --token $env:RAFN_RELEASE_TOKEN
+            --submit
