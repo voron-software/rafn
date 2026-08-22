@@ -371,19 +371,80 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-    timeout-minutes: 15
+    timeout-minutes: 20
     if: ${{ !inputs.dry_run }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # renovate: datasource=github-release-attachments depName=microsoft/winget-create
+      WINGETCREATE_VERSION: v1.12.13.0
+      WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
 
     steps:
       - name: Download wingetcreate
-        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+        run: |
+          $url = "https://github.com/microsoft/winget-create/releases/download/$($env:WINGETCREATE_VERSION)/wingetcreate.exe"
+          Invoke-WebRequest $url -OutFile wingetcreate.exe
+          $actual = (Get-FileHash wingetcreate.exe -Algorithm SHA256).Hash
+          # Get-FileHash yields uppercase; the pin is lowercase because that is what Renovate writes
+          if ($actual -ine $env:WINGETCREATE_SHA256) {
+            Write-Error "wingetcreate.exe checksum mismatch: expected $($env:WINGETCREATE_SHA256), got $actual"
+            exit 1
+          }
 
-      - name: Submit update
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      - name: Generate manifest
+        id: manifest
         run: |
           .\wingetcreate.exe update VoronSoftware.Rafn `
             --version $env:VERSION `
             --urls "https://github.com/voron-software/rafn/releases/download/v$($env:VERSION)/rafn-x86_64-pc-windows-msvc.zip" `
-            --submit
+            --out out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dir = (Get-ChildItem -Path out -Recurse -Filter '*.installer.yaml' |
+                  Select-Object -First 1).Directory.FullName
+          if (-not $dir) { Write-Error "wingetcreate produced no installer manifest"; exit 1 }
+          Get-ChildItem $dir | ForEach-Object {
+            Write-Host "--- $($_.Name) ---"
+            Get-Content $_.FullName
+          }
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+
+      - name: Validate manifest
+        env:
+          MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
+        run: winget validate --manifest $env:MANIFEST_DIR
+
+      - name: Enable local manifests
+        run: winget settings --enable LocalManifestFiles
+
+      - name: Install from manifest
+        env:
+          MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
+        run: |
+          winget install --manifest $env:MANIFEST_DIR `
+            --disable-interactivity `
+            --accept-package-agreements `
+            --accept-source-agreements
+
+      - name: Refresh PATH
+        run: |
+          $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+          $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+          echo "PATH=$machinePath;$userPath" >> $env:GITHUB_ENV
+
+      - name: Check version
+        run: |
+          $actual = (rafn --version).Trim()
+          $expected = "rafn $($env:VERSION)"
+          if ($actual -ne $expected) {
+            Write-Error "Expected '$expected', got '$actual'"
+            exit 1
+          }
+
+      - name: Uninstall
+        run: winget uninstall VoronSoftware.Rafn --disable-interactivity
+
+      - name: Submit update
+        env:
+          MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: .\wingetcreate.exe submit --no-open $env:MANIFEST_DIR

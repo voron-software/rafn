@@ -1,4 +1,17 @@
 {
   extends: ['github>voron-software/.github:renovate.json5'],
   bumpVersion: 'patch',
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Keep the pinned wingetcreate.exe version and SHA256 in sync',
+      managerFilePatterns: ['/^\\.github/workflows/release\\.yml$/'],
+      matchStrings: [
+        'WINGETCREATE_VERSION:\\s*(?<currentValue>\\S+)\\s+WINGETCREATE_SHA256:\\s*(?<currentDigest>\\S+)',
+      ],
+      depNameTemplate: 'microsoft/winget-create',
+      datasourceTemplate: 'github-release-attachments',
+      versioningTemplate: 'loose',
+    },
+  ],
 }
