@@ -28,7 +28,7 @@ runs:
   using: composite
   steps:
     - name: Install rafn
-      uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
+      uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
       with:
         tool: rafn${{ inputs.version != 'latest' && format('@{0}', inputs.version) || '' }}
 
