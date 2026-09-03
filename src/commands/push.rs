@@ -98,7 +98,7 @@ impl PushCommand {
                         info!("Submitted snapshot for {commit} ({count} pushed)");
                     }
                     Err(e) => {
-                        error!("Error pushing {commit}: {e}");
+                        error!("Error pushing {commit}: {e:#}");
                         failed_commits.push(commit.clone());
                     }
                 }

@@ -59,7 +59,7 @@ impl Backend for RemoteBackend {
     async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>> {
         let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
             .await
-            .context("Failed to connect to gRPC service")?;
+            .with_context(|| format!("Failed to connect to gRPC service at {}", self.endpoint))?;
 
         let response = client
             .get_commit_benchmarks(GetCommitBenchmarksRequest {
@@ -69,7 +69,12 @@ impl Backend for RemoteBackend {
                 benchmark_name: None,
             })
             .await
-            .context("gRPC get_commit_benchmarks call failed")?;
+            .with_context(|| {
+                format!(
+                    "gRPC get_commit_benchmarks call to {} failed",
+                    self.endpoint
+                )
+            })?;
 
         Ok(response.into_inner().benchmark_sets)
     }
@@ -77,7 +82,7 @@ impl Backend for RemoteBackend {
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>> {
         let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
             .await
-            .context("Failed to connect to gRPC service")?;
+            .with_context(|| format!("Failed to connect to gRPC service at {}", self.endpoint))?;
 
         let mut data_points: Vec<TrendDataPoint> = if let Some(name) = query.benchmark_name {
             let response = client
@@ -88,7 +93,9 @@ impl Backend for RemoteBackend {
                     limit: Some(query.limit),
                 })
                 .await
-                .context("gRPC get_benchmark_trend call failed")?;
+                .with_context(|| {
+                    format!("gRPC get_benchmark_trend call to {} failed", self.endpoint)
+                })?;
 
             response
                 .into_inner()
@@ -116,7 +123,12 @@ impl Backend for RemoteBackend {
                     limit: Some(query.limit),
                 })
                 .await
-                .context("gRPC get_repository_trends call failed")?;
+                .with_context(|| {
+                    format!(
+                        "gRPC get_repository_trends call to {} failed",
+                        self.endpoint
+                    )
+                })?;
 
             response
                 .into_inner()
@@ -161,5 +173,33 @@ impl BenchmarkClient {
             .context("gRPC push_results call failed")?;
 
         Ok(response.into_inner().benchmarks_pushed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tonic::Status;
+
+    fn wrapped_status_error() -> anyhow::Error {
+        let status = Status::internal("ClickHouse: table default.benchmarks does not exist");
+        anyhow::Error::new(status).context("gRPC push_results call failed")
+    }
+
+    #[test]
+    fn test_status_context_hides_detail_under_default_display() {
+        let short = format!("{}", wrapped_status_error());
+        assert_eq!(short, "gRPC push_results call failed");
+        assert!(
+            !short.contains("ClickHouse"),
+            "default Display should not leak the wrapped status: {short}"
+        );
+    }
+
+    #[test]
+    fn test_status_context_reveals_code_and_message_under_alternate_display() {
+        let full = format!("{:#}", wrapped_status_error());
+        assert!(full.contains("gRPC push_results call failed"));
+        assert!(full.contains("Internal"));
+        assert!(full.contains("ClickHouse: table default.benchmarks does not exist"));
     }
 }
