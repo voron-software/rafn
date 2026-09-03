@@ -411,7 +411,19 @@ jobs:
       - name: Validate manifest
         env:
           MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
-        run: winget validate --manifest $env:MANIFEST_DIR
+        run: |
+          $output = winget validate --manifest $env:MANIFEST_DIR 2>&1 | Out-String
+          Write-Host $output
+          # `winget validate` returns a distinct non-zero exit code
+          # (APPINSTALLER_CLI_ERROR_MANIFEST_VALIDATION_WARNING) when the
+          # manifest is valid but has warnings, separate from a real
+          # validation failure. Key off winget's own success message
+          # instead of the exit code so a warning (e.g. the schema header
+          # URL pattern wingetcreate emits) doesn't block the release.
+          if ($output -notmatch 'Manifest validation succeeded') {
+            Write-Error "winget validate failed (exit code $LASTEXITCODE)"
+            exit 1
+          }
 
       - name: Enable local manifests
         run: winget settings --enable LocalManifestFiles
