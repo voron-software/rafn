@@ -424,6 +424,11 @@ jobs:
             Write-Error "winget validate failed (exit code $LASTEXITCODE)"
             exit 1
           }
+          # The warning-only exit code is still nonzero here. GitHub's
+          # default pwsh wrapper appends an `exit $LASTEXITCODE` after this
+          # script, so it must be reset once we've confirmed success or the
+          # step fails anyway despite the check above.
+          $global:LASTEXITCODE = 0
 
       - name: Enable local manifests
         run: winget settings --enable LocalManifestFiles
