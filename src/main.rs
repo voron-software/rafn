@@ -1,9 +1,12 @@
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rafn::commands::{
     bench::BenchCommand, bisect::BisectCommand, compare::CompareCommand, config::ConfigCommand,
     init::InitCommand, push::PushCommand, trend::TrendCommand,
 };
+use tracing::error;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -40,12 +43,12 @@ enum Commands {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     init_tracing();
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result: Result<()> = match cli.command {
         Commands::Init(cmd) => cmd.execute().await,
         Commands::Bench(cmd) => cmd.execute().await,
         Commands::Push(cmd) => cmd.execute().await,
@@ -53,6 +56,14 @@ async fn main() -> Result<()> {
         Commands::Compare(cmd) => cmd.execute().await,
         Commands::Bisect(cmd) => cmd.execute().await,
         Commands::Config(cmd) => cmd.execute().await,
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("{err:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
