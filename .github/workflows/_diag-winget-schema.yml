@@ -1,6 +1,7 @@
 name: Diag winget schema header
 on:
-  workflow_dispatch:
+  push:
+    branches: [diag/winget-schema-header]
 
 jobs:
   diag:
