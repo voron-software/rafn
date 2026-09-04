@@ -1,0 +1,58 @@
+name: Diag winget schema header
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - name: winget info
+        run: |
+          winget --version
+          winget --info
+
+      - name: Download wingetcreate
+        run: |
+          $url = "https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe"
+          Invoke-WebRequest $url -OutFile wingetcreate.exe
+
+      - name: Generate manifest
+        id: manifest
+        run: |
+          .\wingetcreate.exe update VoronSoftware.Rafn `
+            --version 0.1.6 `
+            --urls "https://github.com/voron-software/rafn/releases/download/v0.1.6/rafn-x86_64-pc-windows-msvc.zip" `
+            --out out
+          $dir = (Get-ChildItem -Path out -Recurse -Filter '*.installer.yaml' |
+                  Select-Object -First 1).Directory.FullName
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+          Get-ChildItem $dir | ForEach-Object {
+            Write-Host "--- $($_.Name) ---"
+            Get-Content $_.FullName
+          }
+
+      - name: Validate as-generated
+        env:
+          MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
+        run: |
+          Write-Host "=== as-generated (1.12.0) ==="
+          winget validate --manifest $env:MANIFEST_DIR
+          Write-Host "exit code: $LASTEXITCODE"
+
+      - name: Validate with candidate schema versions
+        env:
+          MANIFEST_DIR: ${{ steps.manifest.outputs.dir }}
+        run: |
+          $candidates = @('1.0.0','1.1.0','1.2.0','1.4.0','1.5.0','1.6.0','1.7.0','1.9.0','1.10.0','1.12.0')
+          foreach ($v in $candidates) {
+            $work = "candidate-$v"
+            Copy-Item -Recurse -Force $env:MANIFEST_DIR $work
+            Get-ChildItem $work -Filter '*.yaml' | ForEach-Object {
+              (Get-Content $_.FullName) |
+                ForEach-Object { $_ -replace '1\.12\.0', $v } |
+                Set-Content $_.FullName
+            }
+            Write-Host "=== candidate $v ==="
+            winget validate --manifest $work
+            Write-Host "exit code: $LASTEXITCODE"
+          }
