@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
-use tracing::{info, warn};
+use tracing::{Level, enabled, error, info};
 
 use crate::framework::ProcessCommand;
 
@@ -60,7 +60,7 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    warn!("{line}");
+                    info!("{line}");
                     captured.push_str(&line);
                     captured.push('\n');
                 }
@@ -79,4 +79,79 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         stdout,
         stderr,
     })
+}
+
+/// Re-emit captured child stderr at ERROR level when the INFO stream that
+/// carried it live is filtered out.
+///
+/// Child output streams at INFO, so a run under `RUST_LOG=warn` or stricter
+/// would otherwise report only an exit code and drop the compiler or benchmark
+/// diagnostics explaining the failure. Nothing is re-emitted when INFO is
+/// enabled, since the lines have already been logged once.
+pub fn replay_stderr_on_failure(stderr: &str) {
+    if enabled!(Level::INFO) {
+        return;
+    }
+    for line in stderr.lines() {
+        error!("{line}");
+    }
+}
+
+// The tests drive a real subprocess through `sh`, so they only apply on unix.
+#[cfg(all(test, unix))]
+mod tests {
+    use anyhow::Result;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn shell_command(script: &str, current_dir: PathBuf) -> ProcessCommand {
+        ProcessCommand {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            current_dir,
+        }
+    }
+
+    #[test]
+    fn captures_stdout_and_stderr_separately() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command(
+            "echo to-stdout; echo to-stderr >&2",
+            tmp.path().to_path_buf(),
+        );
+
+        let result = run_benchmark(&command)?;
+
+        assert!(result.exit_status.success());
+        assert_eq!(result.stdout, "to-stdout\n");
+        assert_eq!(result.stderr, "to-stderr\n");
+        Ok(())
+    }
+
+    #[test]
+    fn reports_non_zero_exit_status_without_failing() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command("exit 3", tmp.path().to_path_buf());
+
+        let result = run_benchmark(&command)?;
+
+        assert!(!result.exit_status.success());
+        assert_eq!(result.exit_status.code(), Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_failure_is_reported_as_error() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command("true", tmp.path().join("does-not-exist"));
+
+        let err = run_benchmark(&command)
+            .err()
+            .context("expected spawn to fail")?;
+
+        assert!(err.to_string().contains("Failed to spawn"));
+        Ok(())
+    }
 }

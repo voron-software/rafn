@@ -64,6 +64,7 @@ impl BenchCommand {
 
             if !result.exit_status.success() {
                 let bench_exit = result.exit_status.code().unwrap_or(1);
+                runner::replay_stderr_on_failure(&result.stderr);
                 error!("Benchmark command exited with code {bench_exit}");
                 std::process::exit(bench_exit);
             }
