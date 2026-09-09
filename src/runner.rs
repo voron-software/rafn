@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
-use tracing::info;
+use tracing::{Level, enabled, error, info};
 
 use crate::framework::ProcessCommand;
 
@@ -79,6 +79,22 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         stdout,
         stderr,
     })
+}
+
+/// Re-emit captured child stderr at ERROR level when the INFO stream that
+/// carried it live is filtered out.
+///
+/// Child output streams at INFO, so a run under `RUST_LOG=warn` or stricter
+/// would otherwise report only an exit code and drop the compiler or benchmark
+/// diagnostics explaining the failure. Nothing is re-emitted when INFO is
+/// enabled, since the lines have already been logged once.
+pub fn replay_stderr_on_failure(stderr: &str) {
+    if enabled!(Level::INFO) {
+        return;
+    }
+    for line in stderr.lines() {
+        error!("{line}");
+    }
 }
 
 // The tests drive a real subprocess through `sh`, so they only apply on unix.
