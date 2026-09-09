@@ -80,3 +80,62 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         stderr,
     })
 }
+
+// The tests drive a real subprocess through `sh`, so they only apply on unix.
+#[cfg(all(test, unix))]
+mod tests {
+    use anyhow::Result;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn shell_command(script: &str, current_dir: PathBuf) -> ProcessCommand {
+        ProcessCommand {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            current_dir,
+        }
+    }
+
+    #[test]
+    fn captures_stdout_and_stderr_separately() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command(
+            "echo to-stdout; echo to-stderr >&2",
+            tmp.path().to_path_buf(),
+        );
+
+        let result = run_benchmark(&command)?;
+
+        assert!(result.exit_status.success());
+        assert_eq!(result.stdout, "to-stdout\n");
+        assert_eq!(result.stderr, "to-stderr\n");
+        Ok(())
+    }
+
+    #[test]
+    fn reports_non_zero_exit_status_without_failing() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command("exit 3", tmp.path().to_path_buf());
+
+        let result = run_benchmark(&command)?;
+
+        assert!(!result.exit_status.success());
+        assert_eq!(result.exit_status.code(), Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_failure_is_reported_as_error() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let command = shell_command("true", tmp.path().join("does-not-exist"));
+
+        let err = run_benchmark(&command)
+            .err()
+            .context("expected spawn to fail")?;
+
+        assert!(err.to_string().contains("Failed to spawn"));
+        Ok(())
+    }
+}
