@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, ExitStatus, Stdio};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::framework::ProcessCommand;
 
@@ -60,7 +60,7 @@ pub fn run_benchmark(command: &ProcessCommand) -> Result<RunResult> {
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    warn!("{line}");
+                    info!("{line}");
                     captured.push_str(&line);
                     captured.push('\n');
                 }
