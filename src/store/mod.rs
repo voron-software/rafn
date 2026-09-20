@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
 
+use crate::comparison;
 use crate::config::{BackendType, Config, EffectiveConfig, RepoConfig, RepositoryRef};
 use crate::proto::pb::BenchmarkSet;
 
@@ -41,6 +42,12 @@ pub struct TrendDataPoint {
 pub(crate) trait Backend {
     async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>>;
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>>;
+    async fn compare_commits(
+        &self,
+        base: &str,
+        head: &str,
+        threshold_pct: f64,
+    ) -> Result<comparison::Report>;
 }
 
 #[derive(Debug)]
@@ -74,6 +81,18 @@ impl Backend for SelectedBackend {
         match self {
             Self::Local(backend) => backend.trend(query).await,
             Self::Remote(backend) => backend.trend(query).await,
+        }
+    }
+
+    async fn compare_commits(
+        &self,
+        base: &str,
+        head: &str,
+        threshold_pct: f64,
+    ) -> Result<comparison::Report> {
+        match self {
+            Self::Local(backend) => backend.compare_commits(base, head, threshold_pct).await,
+            Self::Remote(backend) => backend.compare_commits(base, head, threshold_pct).await,
         }
     }
 }

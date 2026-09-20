@@ -8,9 +8,9 @@ use anyhow::Result;
 use clap::Args;
 use tracing::info;
 
-use crate::comparison;
-use crate::proto::pb::BenchmarkSet;
-use crate::store::{self, Backend};
+use crate::comparison::{self, Report};
+use crate::config::{BackendType, Config, EffectiveConfig, RepoConfig};
+use crate::store::{self, Backend, RemoteBackend, SelectedBackend};
 
 #[derive(Args, Debug)]
 pub struct CompareCommand {
@@ -21,6 +21,10 @@ pub struct CompareCommand {
     /// Head commit SHA
     #[arg(long)]
     head: String,
+
+    /// Regression threshold percentage (overrides rafn.toml [bench].threshold)
+    #[arg(long)]
+    threshold: Option<f64>,
 
     /// Output format
     #[arg(short, long, default_value = "table")]
@@ -36,50 +40,42 @@ pub enum OutputFormat {
 impl CompareCommand {
     pub async fn execute(self) -> Result<()> {
         let CompareCommand {
-            base: base_sha,
-            head: head_sha,
+            base,
+            head,
+            threshold,
             format,
         } = self;
 
-        let backend = store::selected_backend()?;
+        let repo_config = RepoConfig::load()?;
+        let user_config = Config::load()?;
+        let effective = EffectiveConfig::resolve(&repo_config, &user_config);
+        let threshold_pct = threshold.unwrap_or(effective.bench_threshold);
+
+        let backend = match effective.backend_type {
+            BackendType::Local => SelectedBackend::Local(store::local_backend(&repo_config)),
+            BackendType::Cloud => {
+                SelectedBackend::Remote(RemoteBackend::from_effective(effective)?)
+            }
+        };
 
         if backend.is_remote() {
-            info!("Comparing commits: base={base_sha}, head={head_sha}");
+            info!("Comparing commits: base={base}, head={head}");
         }
 
-        let base = backend.benchmarks_for_commit(&base_sha).await?;
-        if backend.is_remote() {
-            info!("Fetched {} benchmarks from base commit", base.len());
-        }
+        let report = backend.compare_commits(&base, &head, threshold_pct).await?;
 
-        let head = backend.benchmarks_for_commit(&head_sha).await?;
-        if backend.is_remote() {
-            info!("Fetched {} benchmarks from head commit", head.len());
-        }
-
-        output_results(format, base, head)
+        output_report(format, &report)
     }
 }
 
 // stdout is this CLI's output contract, not debug noise — users pipe/read it
 // directly, unlike `tracing`'s log lines.
 #[allow(clippy::print_stdout)]
-fn output_results(
-    format: OutputFormat,
-    base: Vec<BenchmarkSet>,
-    head: Vec<BenchmarkSet>,
-) -> Result<()> {
-    let rows = comparison::compare(&base, &head);
-
-    if rows.is_empty() {
-        println!("No common benchmarks found between the two commits.");
-        return Ok(());
-    }
-
+fn output_report(format: OutputFormat, report: &Report) -> Result<()> {
     match format {
-        OutputFormat::Table => comparison::print_table(&rows),
+        OutputFormat::Table => comparison::print_report(report),
         OutputFormat::Json => {
-            let json = serde_json::to_string_pretty(&rows)?;
+            let json = serde_json::to_string_pretty(report)?;
             println!("{json}");
         }
     }

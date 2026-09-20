@@ -1,13 +1,476 @@
 //! Shared benchmark comparison logic used by `bench` and `compare` commands.
+//!
+//! The types and `compare` algorithm here are a deliberate port of
+//! `rafn-backend`'s `regression` crate (crates/regression), kept in sync by
+//! hand rather than as a cross-repo dependency (rafn is a standalone binary
+//! distributed via GitHub releases/winget, and pinning it to a git dependency
+//! on rafn-backend would tie CLI releases to that repo's history). Keeping
+//! the shape and field names identical means a local snapshot comparison and
+//! a remote `CompareCommits` response ([`crate::store::remote`]) print and
+//! serialize identically.
 
 use std::collections::HashMap;
 
 use colored::Colorize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tabled::{Table, Tabled};
 
 use crate::proto::benchmark::statistic_mean_ns;
-use crate::proto::pb::BenchmarkSet;
+use crate::proto::pb::{Benchmark, BenchmarkSet, Unit, parameter_value};
+
+/// Whether `unit` is one of the duration units that [`to_nanoseconds`] can
+/// convert to a common scale.
+pub fn is_duration_unit(unit: &str) -> bool {
+    matches!(
+        unit,
+        "seconds" | "milliseconds" | "microseconds" | "nanoseconds"
+    )
+}
+
+/// Convert a duration `value` in `unit` to nanoseconds. Non-duration units
+/// pass through unchanged.
+pub fn to_nanoseconds(value: f64, unit: &str) -> f64 {
+    match unit {
+        "seconds" => value * 1_000_000_000.0,
+        "milliseconds" => value * 1_000_000.0,
+        "microseconds" => value * 1_000.0,
+        "nanoseconds" => value,
+        _ => value,
+    }
+}
+
+/// Unit families that are higher-is-better: throughput-like units, plus
+/// `ratio`. Everything else (time, bytes, allocations, cache/branch misses,
+/// instructions, cycles, page_faults, dimensionless) is lower-is-better.
+pub fn metric_lower_is_better(unit: &str) -> bool {
+    !matches!(unit, "count_per_second" | "bits_per_second" | "ratio")
+}
+
+/// Identifies one benchmark series. `branch` is carried for display only —
+/// see [`compare`]'s doc comment for why it is not part of series identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesKey {
+    pub benchmark_name: String,
+    pub metric_name: String,
+    /// The stored parameter bindings, e.g. `{"size":100}`, or `"{}"` for a
+    /// non-parameterized benchmark.
+    pub parameters_json: String,
+    pub branch: String,
+}
+
+/// A series' mean at a single commit, the input to [`compare`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeriesMean {
+    pub key: SeriesKey,
+    pub unit: String,
+    pub mean: f64,
+}
+
+/// Classification of a compared series' change, relative to `threshold_pct`
+/// and the unit's higher-is-better/lower-is-better direction
+/// ([`metric_lower_is_better`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Regressed,
+    Improved,
+    Unchanged,
+}
+
+/// What happened to one series between base and head. A sum type rather
+/// than a bag of `Option`s, so e.g. "added" can't carry a `base_mean` and
+/// "incomparable" can't carry a percentage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Outcome {
+    /// Present at both commits, on a common unit scale.
+    Compared {
+        unit: String,
+        base_mean: f64,
+        head_mean: f64,
+        diff: f64,
+        /// `None` when `base_mean` is zero: a true 0-to-0 non-change, or an
+        /// unbounded change whose direction is recoverable from `diff`'s
+        /// sign.
+        diff_pct: Option<f64>,
+        verdict: Verdict,
+    },
+    /// Present at head only.
+    Added { unit: String, head_mean: f64 },
+    /// Present at base only.
+    Removed { unit: String, base_mean: f64 },
+    /// Present at both commits, but on units with no common scale (e.g.
+    /// bytes vs ratio).
+    Incomparable {
+        base_unit: String,
+        head_unit: String,
+    },
+    /// At least one side's stored mean is not a valid measurement (NaN or
+    /// +-infinity).
+    Invalid { reason: String },
+}
+
+/// One series' outcome, see [`compare`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Comparison {
+    pub key: SeriesKey,
+    pub outcome: Outcome,
+}
+
+/// Headline counts for a [`Report`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Summary {
+    pub regressed: u32,
+    pub improved: u32,
+    pub unchanged: u32,
+    pub added: u32,
+    pub removed: u32,
+    /// Count of `Incomparable`/`Invalid` series: present at both commits but
+    /// with no verdict. Not folded into `unchanged`.
+    pub unassessable: u32,
+    pub threshold_pct: f64,
+    pub has_regressions: bool,
+}
+
+/// The result of [`compare`]: every series' outcome plus a headline summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Report {
+    pub comparisons: Vec<Comparison>,
+    pub summary: Summary,
+}
+
+/// Identity used to match a series between `base` and `head`: everything in
+/// [`SeriesKey`] except `branch`.
+type SeriesIdentity = (String, String, String);
+
+fn identity(key: &SeriesKey) -> SeriesIdentity {
+    (
+        key.benchmark_name.clone(),
+        key.metric_name.clone(),
+        key.parameters_json.clone(),
+    )
+}
+
+/// Compare `base` and `head` series means and classify each one against
+/// `threshold_pct`. Mirrors `regression::compare` in rafn-backend field for
+/// field — see that crate's doc comments for the full rationale (branch kept
+/// out of series identity for cross-branch PR comparisons, duration unit
+/// normalization, zero-baseline handling, non-finite guarding).
+pub fn compare(base: &[SeriesMean], head: &[SeriesMean], threshold_pct: f64) -> Report {
+    let base_by_identity: HashMap<SeriesIdentity, &SeriesMean> =
+        base.iter().map(|m| (identity(&m.key), m)).collect();
+    let head_by_identity: HashMap<SeriesIdentity, &SeriesMean> =
+        head.iter().map(|m| (identity(&m.key), m)).collect();
+
+    let mut comparisons: Vec<Comparison> = Vec::with_capacity(base.len() + head.len());
+
+    for head_mean in head {
+        match base_by_identity.get(&identity(&head_mean.key)) {
+            Some(base_mean) => comparisons.push(compare_pair(base_mean, head_mean, threshold_pct)),
+            None => comparisons.push(Comparison {
+                key: head_mean.key.clone(),
+                outcome: if head_mean.mean.is_finite() {
+                    Outcome::Added {
+                        unit: head_mean.unit.clone(),
+                        head_mean: head_mean.mean,
+                    }
+                } else {
+                    Outcome::Invalid {
+                        reason: "head mean is non-finite".to_string(),
+                    }
+                },
+            }),
+        }
+    }
+
+    for base_mean in base {
+        if !head_by_identity.contains_key(&identity(&base_mean.key)) {
+            comparisons.push(Comparison {
+                key: base_mean.key.clone(),
+                outcome: if base_mean.mean.is_finite() {
+                    Outcome::Removed {
+                        unit: base_mean.unit.clone(),
+                        base_mean: base_mean.mean,
+                    }
+                } else {
+                    Outcome::Invalid {
+                        reason: "base mean is non-finite".to_string(),
+                    }
+                },
+            });
+        }
+    }
+
+    sort_comparisons(&mut comparisons);
+    let summary = summarize(&comparisons, threshold_pct);
+
+    Report {
+        comparisons,
+        summary,
+    }
+}
+
+/// The string [`unit_name`] produces for `UNIT_UNSPECIFIED` (a producer that
+/// omitted `BenchmarkSet.unit` or sent an unrecognized enum value).
+const UNIT_UNSPECIFIED: &str = "unspecified";
+
+fn invalid_comparison(key: SeriesKey, reason: impl Into<String>) -> Comparison {
+    Comparison {
+        key,
+        outcome: Outcome::Invalid {
+            reason: reason.into(),
+        },
+    }
+}
+
+fn incomparable_comparison(key: SeriesKey, base_unit: String, head_unit: String) -> Comparison {
+    Comparison {
+        key,
+        outcome: Outcome::Incomparable {
+            base_unit,
+            head_unit,
+        },
+    }
+}
+
+fn compare_pair(base: &SeriesMean, head: &SeriesMean, threshold_pct: f64) -> Comparison {
+    let key = head.key.clone();
+
+    if !base.mean.is_finite() || !head.mean.is_finite() {
+        let reason = match (base.mean.is_finite(), head.mean.is_finite()) {
+            (false, false) => "base and head means are both non-finite",
+            (false, true) => "base mean is non-finite",
+            (true, false) => "head mean is non-finite",
+            (true, true) => unreachable!(),
+        };
+        return invalid_comparison(key, reason);
+    }
+
+    if base.unit == UNIT_UNSPECIFIED || head.unit == UNIT_UNSPECIFIED {
+        return incomparable_comparison(key, base.unit.clone(), head.unit.clone());
+    }
+
+    let (unit, base_val, head_val) = if is_duration_unit(&base.unit) && is_duration_unit(&head.unit)
+    {
+        (
+            "nanoseconds".to_string(),
+            to_nanoseconds(base.mean, &base.unit),
+            to_nanoseconds(head.mean, &head.unit),
+        )
+    } else if base.unit == head.unit {
+        (head.unit.clone(), base.mean, head.mean)
+    } else {
+        return incomparable_comparison(key, base.unit.clone(), head.unit.clone());
+    };
+
+    // The stored means were finite, but normalizing or subtracting two large
+    // finite values of opposite sign can still overflow to +-infinity.
+    if !base_val.is_finite() || !head_val.is_finite() {
+        return invalid_comparison(key, "normalized value overflowed to non-finite");
+    }
+
+    let diff = head_val - base_val;
+    if !diff.is_finite() {
+        return invalid_comparison(key, "diff overflowed to non-finite");
+    }
+
+    let diff_pct = if base_val == 0.0 {
+        (diff == 0.0).then_some(0.0)
+    } else {
+        // Divide by `base_val.abs()`, not `base_val`: for a negative
+        // baseline, dividing by the signed value would flip the sign of the
+        // percentage relative to `diff`'s actual sign.
+        let pct = diff / base_val.abs() * 100.0;
+        if !pct.is_finite() {
+            return invalid_comparison(key, "diff_pct overflowed to non-finite");
+        }
+        Some(pct)
+    };
+
+    let lower_is_better = metric_lower_is_better(&unit);
+    let verdict = classify(diff, diff_pct, threshold_pct, lower_is_better);
+
+    Comparison {
+        key,
+        outcome: Outcome::Compared {
+            unit,
+            base_mean: base_val,
+            head_mean: head_val,
+            diff,
+            diff_pct,
+            verdict,
+        },
+    }
+}
+
+/// `Unchanged` when the change is within `threshold_pct` (or is a true
+/// 0-to-0 non-change); otherwise `Regressed`/`Improved` by the sign of the
+/// change combined with the unit's higher-is-better/lower-is-better family.
+fn classify(
+    diff: f64,
+    diff_pct: Option<f64>,
+    threshold_pct: f64,
+    lower_is_better: bool,
+) -> Verdict {
+    match diff_pct {
+        Some(pct) if pct.abs() <= threshold_pct => Verdict::Unchanged,
+        Some(pct) => worse_or_better(if lower_is_better { pct } else { -pct }),
+        None if diff == 0.0 => Verdict::Unchanged,
+        None => worse_or_better(if lower_is_better { diff } else { -diff }),
+    }
+}
+
+/// `worse` is positive-means-regressed, already accounting for the unit's
+/// direction.
+fn worse_or_better(worse: f64) -> Verdict {
+    if worse > 0.0 {
+        Verdict::Regressed
+    } else {
+        Verdict::Improved
+    }
+}
+
+fn summarize(comparisons: &[Comparison], threshold_pct: f64) -> Summary {
+    let mut summary = Summary {
+        regressed: 0,
+        improved: 0,
+        unchanged: 0,
+        added: 0,
+        removed: 0,
+        unassessable: 0,
+        threshold_pct,
+        has_regressions: false,
+    };
+
+    for comparison in comparisons {
+        match &comparison.outcome {
+            Outcome::Compared { verdict, .. } => match verdict {
+                Verdict::Regressed => summary.regressed += 1,
+                Verdict::Improved => summary.improved += 1,
+                Verdict::Unchanged => summary.unchanged += 1,
+            },
+            Outcome::Added { .. } => summary.added += 1,
+            Outcome::Removed { .. } => summary.removed += 1,
+            Outcome::Incomparable { .. } | Outcome::Invalid { .. } => summary.unassessable += 1,
+        }
+    }
+
+    summary.has_regressions = summary.regressed > 0;
+    summary
+}
+
+/// Regressions first, then by descending `|diff_pct|`, then by key.
+/// Outcomes with no percentage to rank by (`Added`, `Removed`,
+/// `Incomparable`, `Invalid`) sort after every regressed/improved series.
+fn sort_comparisons(comparisons: &mut [Comparison]) {
+    comparisons.sort_by(|a, b| {
+        is_regressed(&b.outcome)
+            .cmp(&is_regressed(&a.outcome))
+            .then_with(|| {
+                magnitude(&b.outcome)
+                    .partial_cmp(&magnitude(&a.outcome))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| sort_key(&a.key).cmp(&sort_key(&b.key)))
+    });
+}
+
+fn is_regressed(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Compared {
+            verdict: Verdict::Regressed,
+            ..
+        }
+    )
+}
+
+fn magnitude(outcome: &Outcome) -> f64 {
+    match outcome {
+        Outcome::Compared {
+            diff_pct: Some(pct),
+            ..
+        } => pct.abs(),
+        Outcome::Compared { diff_pct: None, .. } => f64::INFINITY,
+        Outcome::Added { .. }
+        | Outcome::Removed { .. }
+        | Outcome::Incomparable { .. }
+        | Outcome::Invalid { .. } => 0.0,
+    }
+}
+
+fn sort_key(key: &SeriesKey) -> (&str, &str, &str, &str) {
+    (
+        &key.benchmark_name,
+        &key.metric_name,
+        &key.parameters_json,
+        &key.branch,
+    )
+}
+
+/// Map the proto `Unit` enum to the lowercase string [`compare`] operates on
+/// (e.g. `UNIT_NANOSECONDS` -> `"nanoseconds"`), matching the string
+/// `db::rows::unit_name` produces on the rafn-backend side.
+pub fn unit_name(unit: i32) -> String {
+    Unit::try_from(unit)
+        .map(|u| u.as_str_name())
+        .unwrap_or("UNIT_UNSPECIFIED")
+        .strip_prefix("UNIT_")
+        .unwrap_or("UNSPECIFIED")
+        .to_ascii_lowercase()
+}
+
+fn parameter_value_json(value: &crate::proto::pb::ParameterValue) -> serde_json::Value {
+    match value.value.as_ref() {
+        Some(parameter_value::Value::IntValue(v)) => serde_json::json!(v),
+        Some(parameter_value::Value::DoubleValue(v)) => serde_json::json!(v),
+        Some(parameter_value::Value::BoolValue(v)) => serde_json::json!(v),
+        Some(parameter_value::Value::StringValue(v)) => serde_json::json!(v),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Canonical JSON for a benchmark's parameter bindings, matching
+/// `db::rows::parameters_json` on the rafn-backend side (both rely on
+/// `serde_json::Map`'s default `BTreeMap` backing for deterministic,
+/// sorted-key output — neither crate enables the `preserve_order` feature).
+fn parameters_json(benchmark: &Benchmark) -> String {
+    let parameters = benchmark
+        .parameters
+        .iter()
+        .map(|(name, value)| (name.clone(), parameter_value_json(value)))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::to_string(&parameters).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Flatten a snapshot's benchmark sets into per-series means, keyed the same
+/// way as a `CompareCommits` response, so a local comparison and a remote one
+/// read identically.
+pub fn flatten_series(sets: &[BenchmarkSet]) -> Vec<SeriesMean> {
+    sets.iter()
+        .flat_map(|set| {
+            let unit = unit_name(set.unit);
+            let branch = set
+                .source
+                .as_ref()
+                .and_then(|s| s.branch.clone())
+                .unwrap_or_default();
+            set.benchmarks.iter().filter_map(move |benchmark| {
+                let mean = statistic_mean_ns(benchmark)?;
+                Some(SeriesMean {
+                    key: SeriesKey {
+                        benchmark_name: benchmark.name.clone(),
+                        metric_name: set.metric_name.clone(),
+                        parameters_json: parameters_json(benchmark),
+                        branch: branch.clone(),
+                    },
+                    unit: unit.clone(),
+                    mean,
+                })
+            })
+        })
+        .collect()
+}
 
 pub fn format_duration(ns: &f64) -> String {
     let v = *ns;
@@ -51,87 +514,124 @@ pub fn format_percent(pct: &f64) -> String {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Tabled)]
-pub struct ComparisonRow {
+fn format_value(value: f64, unit: &str) -> String {
+    if is_duration_unit(unit) {
+        format_duration(&value)
+    } else {
+        format!("{value:.3} {unit}")
+    }
+}
+
+fn format_value_diff(value: f64, unit: &str) -> String {
+    if is_duration_unit(unit) {
+        format_diff(&value)
+    } else {
+        let sign = if value > 0.0 { "+" } else { "" };
+        format!("{sign}{value:.3} {unit}")
+    }
+}
+
+fn format_change_pct(pct: Option<f64>) -> String {
+    match pct {
+        Some(pct) => format_percent(&pct),
+        None => "unbounded".to_string(),
+    }
+}
+
+fn format_verdict(verdict: Verdict) -> String {
+    match verdict {
+        Verdict::Regressed => "✗ regressed".red().to_string(),
+        Verdict::Improved => "✓ improved".green().to_string(),
+        Verdict::Unchanged => "unchanged".to_string(),
+    }
+}
+
+fn display_name(key: &SeriesKey) -> String {
+    if key.parameters_json.is_empty() || key.parameters_json == "{}" {
+        key.benchmark_name.clone()
+    } else {
+        format!("{} {}", key.benchmark_name, key.parameters_json)
+    }
+}
+
+#[derive(Debug, Clone, Tabled)]
+struct ComparedRow {
     #[tabled(rename = "Benchmark")]
-    pub benchmark_name: String,
-    #[tabled(rename = "Base", display = "format_duration")]
-    pub base_mean_ns: f64,
-    #[tabled(rename = "Head", display = "format_duration")]
-    pub head_mean_ns: f64,
-    #[tabled(rename = "Diff", display = "format_diff")]
-    pub diff_ns: f64,
-    #[tabled(rename = "Change %", display = "format_percent")]
-    pub diff_pct: f64,
+    benchmark: String,
+    #[tabled(rename = "Base")]
+    base: String,
+    #[tabled(rename = "Head")]
+    head: String,
+    #[tabled(rename = "Diff")]
+    diff: String,
+    #[tabled(rename = "Change %")]
+    change_pct: String,
+    #[tabled(rename = "Verdict")]
+    verdict: String,
 }
 
-/// Compute per-benchmark diffs between `base` and `head` snapshots.
-/// Only benchmarks present in both snapshots are included.
-/// Results are sorted by absolute diff (largest first).
-pub fn compare(base: &[BenchmarkSet], head: &[BenchmarkSet]) -> Vec<ComparisonRow> {
-    let base_map = flatten_means(base);
-    let head_map = flatten_means(head);
-
-    let mut rows: Vec<ComparisonRow> = base_map
-        .iter()
-        .filter_map(|(benchmark_name, base_mean_ns)| {
-            let head_mean_ns = head_map.get(benchmark_name)?;
-            let diff_ns = *head_mean_ns - *base_mean_ns;
-            let diff_pct = if *base_mean_ns > 0.0 {
-                (diff_ns / *base_mean_ns) * 100.0
-            } else {
-                0.0
-            };
-            Some(ComparisonRow {
-                benchmark_name: benchmark_name.clone(),
-                base_mean_ns: *base_mean_ns,
-                head_mean_ns: *head_mean_ns,
-                diff_ns,
-                diff_pct,
-            })
-        })
-        .collect();
-
-    rows.sort_by(|a, b| {
-        b.diff_ns
-            .abs()
-            .partial_cmp(&a.diff_ns.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    rows
-}
-
-fn flatten_means(sets: &[BenchmarkSet]) -> HashMap<String, f64> {
-    sets.iter()
-        .filter(|set| set.metric_name == "wall_time")
-        .flat_map(|set| set.benchmarks.iter())
-        .filter_map(|benchmark| {
-            statistic_mean_ns(benchmark).map(|mean| (benchmark.name.clone(), mean))
-        })
-        .collect()
-}
-
-/// Return `true` if any benchmark in `rows` regressed by more than `threshold`
-/// percent. A regression is defined as `diff_pct > threshold` (slower is positive).
-pub fn has_regressions(rows: &[ComparisonRow], threshold: f64) -> bool {
-    rows.iter().any(|r| r.diff_pct > threshold)
-}
-
-/// Print a comparison table and a summary line to stdout.
+/// Print a comparison report to stdout: a table of directly-compared series,
+/// a line per added/removed/incomparable/invalid series, and a summary line.
 // stdout is this CLI's output contract, not debug noise — users pipe/read it
 // directly, unlike `tracing`'s log lines.
 #[allow(clippy::print_stdout)]
-pub fn print_table(rows: &[ComparisonRow]) {
-    let table = Table::new(rows).to_string();
-    println!("{table}");
-    println!();
+pub fn print_report(report: &Report) {
+    let compared_rows: Vec<ComparedRow> = report
+        .comparisons
+        .iter()
+        .filter_map(|comparison| match &comparison.outcome {
+            Outcome::Compared {
+                unit,
+                base_mean,
+                head_mean,
+                diff,
+                diff_pct,
+                verdict,
+            } => Some(ComparedRow {
+                benchmark: display_name(&comparison.key),
+                base: format_value(*base_mean, unit),
+                head: format_value(*head_mean, unit),
+                diff: format_value_diff(*diff, unit),
+                change_pct: format_change_pct(*diff_pct),
+                verdict: format_verdict(*verdict),
+            }),
+            _ => None,
+        })
+        .collect();
 
-    let improvements = rows.iter().filter(|r| r.diff_ns < 0.0).count();
-    let regressions = rows.iter().filter(|r| r.diff_ns > 0.0).count();
-    println!("Summary:");
-    println!("  Total: {}", rows.len());
-    println!("  {} Improvements: {}", "✓".green(), improvements);
-    println!("  {} Regressions: {}", "✗".red(), regressions);
+    if !compared_rows.is_empty() {
+        println!("{}", Table::new(&compared_rows));
+        println!();
+    }
+
+    for comparison in &report.comparisons {
+        let name = display_name(&comparison.key);
+        match &comparison.outcome {
+            Outcome::Added { unit, head_mean } => {
+                println!("+ {name} added: {}", format_value(*head_mean, unit));
+            }
+            Outcome::Removed { unit, base_mean } => {
+                println!("- {name} removed: {}", format_value(*base_mean, unit));
+            }
+            Outcome::Incomparable {
+                base_unit,
+                head_unit,
+            } => {
+                println!("? {name} incomparable: {base_unit} vs {head_unit}");
+            }
+            Outcome::Invalid { reason } => {
+                println!("! {name} invalid: {reason}");
+            }
+            Outcome::Compared { .. } => {}
+        }
+    }
+
+    println!();
+    let s = &report.summary;
+    println!(
+        "{} regressed, {} improved, {} unchanged, {} added, {} removed, {} unassessable (threshold {:.2}%)",
+        s.regressed, s.improved, s.unchanged, s.added, s.removed, s.unassessable, s.threshold_pct
+    );
 }
 
 #[cfg(test)]
@@ -215,6 +715,391 @@ mod tests {
         );
     }
 
+    fn mean(benchmark: &str, unit: &str, mean: f64) -> SeriesMean {
+        mean_ex(benchmark, "wall_time", "", "main", unit, mean)
+    }
+
+    fn mean_ex(
+        benchmark: &str,
+        metric: &str,
+        parameters_json: &str,
+        branch: &str,
+        unit: &str,
+        mean: f64,
+    ) -> SeriesMean {
+        SeriesMean {
+            key: SeriesKey {
+                benchmark_name: benchmark.to_string(),
+                metric_name: metric.to_string(),
+                parameters_json: parameters_json.to_string(),
+                branch: branch.to_string(),
+            },
+            unit: unit.to_string(),
+            mean,
+        }
+    }
+
+    fn compared<'a>(
+        report: &'a Report,
+        benchmark: &str,
+    ) -> (&'a str, f64, f64, f64, Option<f64>, Verdict) {
+        let Some(comparison) = report
+            .comparisons
+            .iter()
+            .find(|c| c.key.benchmark_name == benchmark)
+        else {
+            unreachable!("{benchmark} present in report");
+        };
+        match &comparison.outcome {
+            Outcome::Compared {
+                unit,
+                base_mean,
+                head_mean,
+                diff,
+                diff_pct,
+                verdict,
+            } => (unit, *base_mean, *head_mean, *diff, *diff_pct, *verdict),
+            other => unreachable!("{benchmark} expected Compared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_above_threshold_is_flagged() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        let head = vec![mean("bench", "nanoseconds", 120.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(verdict, Verdict::Regressed);
+        assert_eq!(diff_pct, Some(20.0));
+        assert!(report.summary.has_regressions);
+        assert_eq!(report.summary.regressed, 1);
+    }
+
+    #[test]
+    fn improvement_is_flagged() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        let head = vec![mean("bench", "nanoseconds", 80.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, _, verdict) = compared(&report, "bench");
+        assert_eq!(verdict, Verdict::Improved);
+        assert_eq!(report.summary.improved, 1);
+        assert!(!report.summary.has_regressions);
+    }
+
+    #[test]
+    fn noise_inside_threshold_is_unchanged() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        let head = vec![mean("bench", "nanoseconds", 102.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, _, verdict) = compared(&report, "bench");
+        assert_eq!(verdict, Verdict::Unchanged);
+        assert_eq!(report.summary.unchanged, 1);
+    }
+
+    #[test]
+    fn exactly_at_threshold_is_unchanged() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        let head = vec![mean("bench", "nanoseconds", 105.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(diff_pct, Some(5.0));
+        assert_eq!(verdict, Verdict::Unchanged, "boundary is inclusive");
+    }
+
+    #[test]
+    fn benchmark_only_at_head_is_added() {
+        let base: Vec<SeriesMean> = vec![];
+        let head = vec![mean("bench", "nanoseconds", 100.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(report.comparisons.len(), 1);
+        match &report.comparisons[0].outcome {
+            Outcome::Added { unit, head_mean } => {
+                assert_eq!(unit, "nanoseconds");
+                assert_eq!(*head_mean, 100.0);
+            }
+            other => unreachable!("expected Added, got {other:?}"),
+        }
+        assert_eq!(report.summary.added, 1);
+    }
+
+    #[test]
+    fn benchmark_only_at_base_is_removed() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        let head: Vec<SeriesMean> = vec![];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(report.comparisons.len(), 1);
+        match &report.comparisons[0].outcome {
+            Outcome::Removed { unit, base_mean } => {
+                assert_eq!(unit, "nanoseconds");
+                assert_eq!(*base_mean, 100.0);
+            }
+            other => unreachable!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(report.summary.removed, 1);
+    }
+
+    #[test]
+    fn seconds_and_milliseconds_normalize_and_compare() {
+        let base = vec![mean("bench", "seconds", 1.0)];
+        let head = vec![mean("bench", "milliseconds", 1000.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (unit, base_mean, head_mean, diff, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(unit, "nanoseconds");
+        assert_eq!(base_mean, 1_000_000_000.0);
+        assert_eq!(head_mean, 1_000_000_000.0);
+        assert_eq!(diff, 0.0);
+        assert_eq!(diff_pct, Some(0.0));
+        assert_eq!(verdict, Verdict::Unchanged);
+    }
+
+    #[test]
+    fn bytes_and_ratio_are_incomparable() {
+        let base = vec![mean("bench", "bytes", 100.0)];
+        let head = vec![mean("bench", "ratio", 1.5)];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(report.comparisons.len(), 1);
+        assert!(matches!(
+            report.comparisons[0].outcome,
+            Outcome::Incomparable { .. }
+        ));
+        assert_eq!(report.summary.unassessable, 1);
+    }
+
+    #[test]
+    fn unspecified_unit_never_issues_a_verdict() {
+        let base = vec![mean("bench", "unspecified", 100.0)];
+        let head = vec![mean("bench", "unspecified", 200.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert!(matches!(
+            report.comparisons[0].outcome,
+            Outcome::Incomparable { .. }
+        ));
+        assert_eq!(report.summary.regressed, 0);
+        assert_eq!(report.summary.unassessable, 1);
+    }
+
+    #[test]
+    fn non_finite_means_are_invalid_not_a_verdict() {
+        let base = vec![mean("bench", "nanoseconds", f64::NAN)];
+        let head = vec![mean("bench", "nanoseconds", 100.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert!(matches!(
+            report.comparisons[0].outcome,
+            Outcome::Invalid { .. }
+        ));
+        assert_eq!(report.summary.unassessable, 1);
+    }
+
+    #[test]
+    fn negative_baseline_percentage_matches_diff_sign() {
+        let base = vec![mean("bench", "dimensionless", -100.0)];
+        let head = vec![mean("bench", "dimensionless", -50.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        match &report.comparisons[0].outcome {
+            Outcome::Compared { diff, diff_pct, .. } => {
+                assert_eq!(*diff, 50.0);
+                assert_eq!(*diff_pct, Some(50.0));
+            }
+            other => unreachable!("expected Compared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_baseline_with_nonzero_head_is_unbounded_regression() {
+        let base = vec![mean("bench", "allocation_count", 0.0)];
+        let head = vec![mean("bench", "allocation_count", 5.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, diff, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(diff_pct, None);
+        assert_eq!(diff, 5.0);
+        assert_eq!(verdict, Verdict::Regressed);
+    }
+
+    #[test]
+    fn zero_to_zero_is_unchanged() {
+        let base = vec![mean("bench", "allocation_count", 0.0)];
+        let head = vec![mean("bench", "allocation_count", 0.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(diff_pct, Some(0.0));
+        assert_eq!(verdict, Verdict::Unchanged);
+    }
+
+    #[test]
+    fn count_per_second_drop_is_the_regression() {
+        let base = vec![mean("bench", "count_per_second", 1000.0)];
+        let head = vec![mean("bench", "count_per_second", 800.0)];
+
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, _, verdict) = compared(&report, "bench");
+        assert_eq!(
+            verdict,
+            Verdict::Regressed,
+            "a throughput drop is a regression"
+        );
+
+        let base = vec![mean("bench", "count_per_second", 1000.0)];
+        let head = vec![mean("bench", "count_per_second", 1200.0)];
+        let report = compare(&base, &head, 5.0);
+        let (_, _, _, _, _, verdict) = compared(&report, "bench");
+        assert_eq!(
+            verdict,
+            Verdict::Improved,
+            "a throughput rise is an improvement"
+        );
+    }
+
+    #[test]
+    fn parameter_bindings_keep_series_separate() {
+        let base = vec![
+            mean_ex(
+                "sort",
+                "wall_time",
+                r#"{"size":100}"#,
+                "main",
+                "nanoseconds",
+                100.0,
+            ),
+            mean_ex(
+                "sort",
+                "wall_time",
+                r#"{"size":1000}"#,
+                "main",
+                "nanoseconds",
+                2000.0,
+            ),
+        ];
+        let head = vec![
+            mean_ex(
+                "sort",
+                "wall_time",
+                r#"{"size":100}"#,
+                "main",
+                "nanoseconds",
+                200.0,
+            ),
+            mean_ex(
+                "sort",
+                "wall_time",
+                r#"{"size":1000}"#,
+                "main",
+                "nanoseconds",
+                1000.0,
+            ),
+        ];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(report.comparisons.len(), 2);
+        let size_100 = report
+            .comparisons
+            .iter()
+            .find(|c| c.key.parameters_json == r#"{"size":100}"#)
+            .unwrap_or_else(|| unreachable!("size=100 binding present"));
+        match &size_100.outcome {
+            Outcome::Compared { verdict, .. } => assert_eq!(*verdict, Verdict::Regressed),
+            other => unreachable!("expected Compared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_branch_comparison_still_matches_and_carries_head_branch() {
+        let base = vec![mean_ex(
+            "bench",
+            "wall_time",
+            "",
+            "main",
+            "nanoseconds",
+            100.0,
+        )];
+        let head = vec![mean_ex(
+            "bench",
+            "wall_time",
+            "",
+            "feature/x",
+            "nanoseconds",
+            200.0,
+        )];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(
+            report.comparisons.len(),
+            1,
+            "branch is not part of series identity"
+        );
+        assert_eq!(report.comparisons[0].key.branch, "feature/x");
+    }
+
+    #[test]
+    fn ordering_puts_regressions_first() {
+        let base = vec![
+            mean("improved", "nanoseconds", 100.0),
+            mean("regressed_small", "nanoseconds", 100.0),
+            mean("regressed_big", "nanoseconds", 100.0),
+        ];
+        let head = vec![
+            mean("improved", "nanoseconds", 50.0),
+            mean("regressed_small", "nanoseconds", 110.0),
+            mean("regressed_big", "nanoseconds", 200.0),
+        ];
+
+        let report = compare(&base, &head, 5.0);
+
+        let names: Vec<&str> = report
+            .comparisons
+            .iter()
+            .map(|c| c.key.benchmark_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["regressed_big", "regressed_small", "improved"],
+            "regressions first, worst first"
+        );
+    }
+
+    #[test]
+    fn report_serializes_null_diff_pct_and_round_trips() {
+        let base = vec![mean("bench", "allocation_count", 0.0)];
+        let head = vec![mean("bench", "allocation_count", 5.0)];
+        let report = compare(&base, &head, 5.0);
+
+        let json = serde_json::to_string(&report)
+            .unwrap_or_else(|e| unreachable!("must serialize as valid JSON: {e}"));
+        assert!(json.contains("\"diff_pct\":null"));
+
+        let round_tripped: Report = serde_json::from_str(&json)
+            .unwrap_or_else(|e| unreachable!("must deserialize back without error: {e}"));
+        assert_eq!(round_tripped.comparisons.len(), report.comparisons.len());
+    }
+
     fn test_repository() -> RepositoryRef {
         RepositoryRef {
             forge: "github.com".to_string(),
@@ -227,7 +1112,7 @@ mod tests {
         benchmark_set(
             &test_repository(),
             "abc123",
-            None,
+            Some("main".to_string()),
             "run-1".to_string(),
             prost_types::Timestamp::default(),
             "rust",
@@ -240,37 +1125,36 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_computes_diff() {
+    fn flatten_series_keys_on_name_metric_and_carries_branch_and_unit() {
+        let sets = vec![make_set("foo", 1_000_000.0)];
+        let series = flatten_series(&sets);
+
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].key.benchmark_name, "foo");
+        assert_eq!(series[0].key.metric_name, "wall_time");
+        assert_eq!(series[0].key.parameters_json, "{}");
+        assert_eq!(series[0].key.branch, "main");
+        assert_eq!(series[0].unit, "nanoseconds");
+        assert_eq!(series[0].mean, 1_000_000.0);
+    }
+
+    #[test]
+    fn flatten_series_skips_benchmarks_without_a_mean() {
+        let mut sets = vec![make_set("foo", 1_000_000.0)];
+        sets[0].benchmarks[0].statistics = None;
+
+        assert!(flatten_series(&sets).is_empty());
+    }
+
+    #[test]
+    fn compare_end_to_end_over_flattened_snapshots() {
         let base = vec![make_set("foo", 1_000_000.0)];
         let head = vec![make_set("foo", 1_100_000.0)];
-        let rows = compare(&base, &head);
-        assert_eq!(rows.len(), 1);
-        assert!((rows[0].diff_pct - 10.0).abs() < 0.01);
-    }
 
-    #[test]
-    fn test_compare_skips_unmatched() {
-        let base = vec![make_set("foo", 1_000_000.0), make_set("bar", 2_000_000.0)];
-        let head = vec![make_set("foo", 1_000_000.0)];
-        let rows = compare(&base, &head);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].benchmark_name, "foo");
-    }
+        let report = compare(&flatten_series(&base), &flatten_series(&head), 5.0);
 
-    #[test]
-    fn test_has_regressions_above_threshold() {
-        let base = vec![make_set("foo", 1_000_000.0)];
-        let head = vec![make_set("foo", 1_100_000.0)]; // +10%
-        let rows = compare(&base, &head);
-        assert!(has_regressions(&rows, 5.0));
-        assert!(!has_regressions(&rows, 15.0));
-    }
-
-    #[test]
-    fn test_has_regressions_improvement_does_not_trip() {
-        let base = vec![make_set("foo", 1_100_000.0)];
-        let head = vec![make_set("foo", 1_000_000.0)]; // improvement
-        let rows = compare(&base, &head);
-        assert!(!has_regressions(&rows, 5.0));
+        let (_, _, _, _, diff_pct, verdict) = compared(&report, "foo");
+        assert_eq!(verdict, Verdict::Regressed);
+        assert!((diff_pct.unwrap_or_default() - 10.0).abs() < 0.01);
     }
 }
