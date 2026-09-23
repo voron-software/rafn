@@ -11,12 +11,30 @@
 
 use std::collections::HashMap;
 
+use anyhow::{Result, ensure};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use tabled::{Table, Tabled};
 
 use crate::proto::benchmark::statistic_mean_ns;
 use crate::proto::pb::{Benchmark, BenchmarkSet, Unit, parameter_value};
+
+/// Rejects a `--threshold`/`[bench].threshold` that cannot produce a
+/// meaningful verdict: negative (an exact 0% change would already exceed
+/// it, so it would classify as `Regressed`) or non-finite (`NaN` compares
+/// false to everything, so `classify`'s `pct.abs() <= threshold_pct` would
+/// never hold and every finite change would bypass `Unchanged`). Call this
+/// before invoking either backend - local or remote - so `compare`/`bench`
+/// fail in milliseconds instead of after a round trip to the one that does
+/// validate, and so `--threshold` behaves identically between them (review
+/// finding on VRN-43).
+pub fn validate_threshold_pct(threshold_pct: f64) -> Result<()> {
+    ensure!(
+        threshold_pct.is_finite() && threshold_pct >= 0.0,
+        "threshold must be a finite percentage >= 0, got {threshold_pct}"
+    );
+    Ok(())
+}
 
 /// Whether `unit` is one of the duration units that [`to_nanoseconds`] can
 /// convert to a common scale.
@@ -164,7 +182,14 @@ pub fn compare(base: &[SeriesMean], head: &[SeriesMean], threshold_pct: f64) -> 
 
     let mut comparisons: Vec<Comparison> = Vec::with_capacity(base.len() + head.len());
 
-    for head_mean in head {
+    // Over `*_by_identity`'s values, not `head`/`base` directly: a results
+    // directory can contain the same benchmark/metric/parameters identity in
+    // more than one `BenchmarkSet`, and the maps above already collapsed
+    // those to one entry per identity. Iterating the raw slices instead used
+    // to emit one comparison per duplicate, each matched against whichever
+    // value the *other* side's map happened to retain - duplicate rows and
+    // inflated summary counts (review finding on VRN-43).
+    for head_mean in head_by_identity.values() {
         match base_by_identity.get(&identity(&head_mean.key)) {
             Some(base_mean) => comparisons.push(compare_pair(base_mean, head_mean, threshold_pct)),
             None => comparisons.push(Comparison {
@@ -183,7 +208,7 @@ pub fn compare(base: &[SeriesMean], head: &[SeriesMean], threshold_pct: f64) -> 
         }
     }
 
-    for base_mean in base {
+    for base_mean in base_by_identity.values() {
         if !head_by_identity.contains_key(&identity(&base_mean.key)) {
             comparisons.push(Comparison {
                 key: base_mean.key.clone(),
@@ -499,24 +524,30 @@ pub fn format_diff(ns: &f64) -> String {
     }
 }
 
-pub fn format_percent(pct: &f64) -> String {
+/// Colors by `verdict`, not by `pct`'s raw sign: for a higher-is-better unit
+/// (`count_per_second`, `bits_per_second`, `ratio`) a regression is a
+/// negative percentage, and coloring by sign alone would show it green next
+/// to a red `Regressed` verdict (review finding on VRN-43).
+pub fn format_percent(pct: &f64, verdict: Verdict) -> String {
     let s = if *pct > 0.0 {
         format!("+{pct:.1}%")
     } else {
         format!("{pct:.1}%")
     };
-    if *pct > 0.0 {
-        s.red().to_string()
-    } else if *pct < 0.0 {
-        s.green().to_string()
-    } else {
-        s
+    match verdict {
+        Verdict::Regressed => s.red().to_string(),
+        Verdict::Improved => s.green().to_string(),
+        Verdict::Unchanged => s,
     }
 }
 
 fn format_value(value: f64, unit: &str) -> String {
     if is_duration_unit(unit) {
-        format_duration(&value)
+        // `Added`/`Removed` pass the series' own stored unit (e.g. "seconds"),
+        // not the "nanoseconds" `compare_pair` normalizes `Compared` rows to
+        // - so unlike those, `value` here is not already in nanoseconds and
+        // must go through `to_nanoseconds` first (review finding on VRN-43).
+        format_duration(&to_nanoseconds(value, unit))
     } else {
         format!("{value:.3} {unit}")
     }
@@ -531,9 +562,9 @@ fn format_value_diff(value: f64, unit: &str) -> String {
     }
 }
 
-fn format_change_pct(pct: Option<f64>) -> String {
+fn format_change_pct(pct: Option<f64>, verdict: Verdict) -> String {
     match pct {
-        Some(pct) => format_percent(&pct),
+        Some(pct) => format_percent(&pct, verdict),
         None => "unbounded".to_string(),
     }
 }
@@ -546,11 +577,17 @@ fn format_verdict(verdict: Verdict) -> String {
     }
 }
 
+/// Includes `metric_name`, not just `benchmark_name`: series identity
+/// ([`identity`]) is keyed on both, so two metrics of the same benchmark
+/// (e.g. wall time and CPU time, common in remote `CompareCommits`
+/// responses) are different series and must render as different rows
+/// (review finding on VRN-43).
 fn display_name(key: &SeriesKey) -> String {
+    let name = format!("{} ({})", key.benchmark_name, key.metric_name);
     if key.parameters_json.is_empty() || key.parameters_json == "{}" {
-        key.benchmark_name.clone()
+        name
     } else {
-        format!("{} {}", key.benchmark_name, key.parameters_json)
+        format!("{name} {}", key.parameters_json)
     }
 }
 
@@ -592,7 +629,7 @@ pub fn print_report(report: &Report) {
                 base: format_value(*base_mean, unit),
                 head: format_value(*head_mean, unit),
                 diff: format_value_diff(*diff, unit),
-                change_pct: format_change_pct(*diff_pct),
+                change_pct: format_change_pct(*diff_pct, *verdict),
                 verdict: format_verdict(*verdict),
             }),
             _ => None,
@@ -696,23 +733,71 @@ mod tests {
     }
 
     #[test]
-    fn format_percent_positive_is_red_with_plus() {
-        assert_eq!(strip_ansi(&format_percent(&10.0)), "+10.0%");
+    fn format_percent_regressed_is_red_with_plus_for_positive_pct() {
+        assert_eq!(
+            strip_ansi(&format_percent(&10.0, Verdict::Regressed)),
+            "+10.0%"
+        );
     }
 
     #[test]
-    fn format_percent_negative_is_green_without_plus() {
-        assert_eq!(strip_ansi(&format_percent(&-7.5)), "-7.5%");
+    fn format_percent_improved_is_green_without_plus_for_negative_pct() {
+        assert_eq!(
+            strip_ansi(&format_percent(&-7.5, Verdict::Improved)),
+            "-7.5%"
+        );
     }
 
     #[test]
-    fn format_percent_zero_is_plain() {
-        let out = format_percent(&0.0);
+    fn format_percent_unchanged_is_plain() {
+        let out = format_percent(&0.0, Verdict::Unchanged);
         assert_eq!(out, "0.0%");
         assert!(
             !out.contains("\x1b["),
-            "zero change should have no ANSI codes"
+            "an unchanged verdict should have no ANSI codes"
         );
+    }
+
+    #[test]
+    fn format_percent_colors_by_verdict_not_by_raw_sign() {
+        // Forced on: `colored` no-ops in this (non-tty) test environment by
+        // default, which would make every branch below produce identical
+        // plain text and defeat the assertions regardless of which is
+        // correct. No other test in this crate touches `colored::control`,
+        // so this doesn't race.
+        colored::control::set_override(true);
+
+        // Same magnitude and sign, opposite verdicts - e.g. a throughput
+        // regression (higher-is-better, so a drop is a negative diff_pct)
+        // versus a duration improvement (lower-is-better, so a drop is also
+        // a negative diff_pct but a good thing). Coloring by sign alone
+        // would render both identically green (review finding on VRN-43).
+        let regressed = format_percent(&-20.0, Verdict::Regressed);
+        let improved = format_percent(&-20.0, Verdict::Improved);
+        assert_eq!(regressed, "-20.0%".red().to_string());
+        assert_eq!(improved, "-20.0%".green().to_string());
+        assert_ne!(regressed, improved);
+
+        colored::control::unset_override();
+    }
+
+    #[test]
+    fn validate_threshold_pct_accepts_finite_non_negative_values() {
+        assert!(validate_threshold_pct(0.0).is_ok());
+        assert!(validate_threshold_pct(5.0).is_ok());
+    }
+
+    #[test]
+    fn validate_threshold_pct_rejects_negative() {
+        // A negative threshold would fail even an exact 0% change: `classify`
+        // checks `pct.abs() <= threshold_pct`, and `abs()` is never negative.
+        assert!(validate_threshold_pct(-0.1).is_err());
+    }
+
+    #[test]
+    fn validate_threshold_pct_rejects_non_finite() {
+        assert!(validate_threshold_pct(f64::NAN).is_err());
+        assert!(validate_threshold_pct(f64::INFINITY).is_err());
     }
 
     fn mean(benchmark: &str, unit: &str, mean: f64) -> SeriesMean {
@@ -974,6 +1059,101 @@ mod tests {
             Verdict::Improved,
             "a throughput rise is an improvement"
         );
+    }
+
+    #[test]
+    fn count_per_second_regression_change_pct_renders_red_despite_negative_diff_pct() {
+        let base = vec![mean("bench", "count_per_second", 1000.0)];
+        let head = vec![mean("bench", "count_per_second", 800.0)];
+        let report = compare(&base, &head, 5.0);
+
+        let (_, _, _, _, diff_pct, verdict) = compared(&report, "bench");
+        assert_eq!(verdict, Verdict::Regressed);
+        let diff_pct = diff_pct.unwrap_or_else(|| unreachable!("nonzero base means a percentage"));
+        assert!(diff_pct < 0.0, "a throughput drop is a negative diff_pct");
+
+        let rendered = format_change_pct(Some(diff_pct), verdict);
+        assert_eq!(
+            rendered,
+            format!("{diff_pct:.1}%").red().to_string(),
+            "a regression must render red even though diff_pct is negative"
+        );
+    }
+
+    #[test]
+    fn duplicate_series_identity_in_head_produces_one_comparison() {
+        let base = vec![mean("bench", "nanoseconds", 100.0)];
+        // Stands in for a results directory containing the same
+        // benchmark/metric/parameters identity in more than one
+        // `BenchmarkSet`.
+        let head = vec![
+            mean("bench", "nanoseconds", 120.0),
+            mean("bench", "nanoseconds", 150.0),
+        ];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(
+            report.comparisons.len(),
+            1,
+            "a duplicate head identity must not produce duplicate rows"
+        );
+    }
+
+    #[test]
+    fn duplicate_series_identity_in_base_produces_one_comparison() {
+        let base = vec![
+            mean("bench", "nanoseconds", 100.0),
+            mean("bench", "nanoseconds", 110.0),
+        ];
+        let head: Vec<SeriesMean> = vec![];
+
+        let report = compare(&base, &head, 5.0);
+
+        assert_eq!(
+            report.comparisons.len(),
+            1,
+            "a duplicate base identity must not produce duplicate removed rows"
+        );
+    }
+
+    #[test]
+    fn display_name_includes_metric_to_disambiguate_same_benchmark_different_metrics() {
+        let wall = SeriesKey {
+            benchmark_name: "bench".to_string(),
+            metric_name: "wall_time".to_string(),
+            parameters_json: String::new(),
+            branch: "main".to_string(),
+        };
+        let cpu = SeriesKey {
+            metric_name: "cpu_time".to_string(),
+            ..wall.clone()
+        };
+
+        assert_eq!(display_name(&wall), "bench (wall_time)");
+        assert_eq!(display_name(&cpu), "bench (cpu_time)");
+        assert_ne!(display_name(&wall), display_name(&cpu));
+    }
+
+    #[test]
+    fn display_name_keeps_parameters_after_the_metric() {
+        let key = SeriesKey {
+            benchmark_name: "sort".to_string(),
+            metric_name: "wall_time".to_string(),
+            parameters_json: r#"{"size":100}"#.to_string(),
+            branch: "main".to_string(),
+        };
+
+        assert_eq!(display_name(&key), r#"sort (wall_time) {"size":100}"#);
+    }
+
+    #[test]
+    fn format_value_converts_a_non_normalized_duration_unit_before_scaling() {
+        // `Added`/`Removed` pass the series' own unit, not the "nanoseconds"
+        // `compare_pair` normalizes `Compared` rows to - 1.0 seconds must
+        // not print as "1.000 ns".
+        assert_eq!(format_value(1.0, "seconds"), "1.000 s");
+        assert_eq!(format_value(1.0, "milliseconds"), "1.000 ms");
     }
 
     #[test]

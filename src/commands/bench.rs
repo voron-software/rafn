@@ -47,6 +47,7 @@ impl BenchCommand {
         let effective = EffectiveConfig::resolve(&repo_config, &user_config);
 
         let threshold = self.threshold.unwrap_or(effective.bench_threshold);
+        comparison::validate_threshold_pct(threshold)?;
         let repository = store::require_repository(&effective)?;
 
         let framework_config = framework::detect_framework(&self.args)?;

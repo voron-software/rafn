@@ -50,6 +50,7 @@ impl CompareCommand {
         let user_config = Config::load()?;
         let effective = EffectiveConfig::resolve(&repo_config, &user_config);
         let threshold_pct = threshold.unwrap_or(effective.bench_threshold);
+        comparison::validate_threshold_pct(threshold_pct)?;
 
         let backend = match effective.backend_type {
             BackendType::Local => SelectedBackend::Local(store::local_backend(&repo_config)),
