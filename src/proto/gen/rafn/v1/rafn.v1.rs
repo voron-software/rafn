@@ -524,6 +524,16 @@ pub struct GetBenchmarkTrendRequest {
     /// Maximum number of trend points to return, newest first.  Defaults to 50.
     #[prost(uint32, optional, tag="4")]
     pub limit: ::core::option::Option<u32>,
+    /// Exact parameter bindings (as stored), to scope the trend to one binding
+    /// of a parameterized benchmark. Without it, a commit with multiple
+    /// bindings for the same benchmark/metric returns only an arbitrary one.
+    #[prost(string, optional, tag="5")]
+    pub parameters_json: ::core::option::Option<::prost::alloc::string::String>,
+    /// Exact branch, to scope the trend to one branch. Without it, a series
+    /// recorded on both the main branch and PR/feature branches interleaves
+    /// all of those runs into one commit history.
+    #[prost(string, optional, tag="6")]
+    pub branch: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Response carrying the requested benchmark trend.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -573,6 +583,172 @@ pub struct GetCommitBenchmarksResponse {
     /// commit has no stored results.
     #[prost(message, repeated, tag="1")]
     pub benchmark_sets: ::prost::alloc::vec::Vec<BenchmarkSet>,
+}
+/// Identifies one benchmark series in a comparison. `branch` is carried for
+/// display only; it is not part of series identity (see
+/// `CompareCommitsRequest`'s docs).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeriesKey {
+    #[prost(string, tag="1")]
+    pub benchmark_name: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub metric_name: ::prost::alloc::string::String,
+    #[prost(string, tag="3")]
+    pub parameters_json: ::prost::alloc::string::String,
+    #[prost(string, tag="4")]
+    pub branch: ::prost::alloc::string::String,
+}
+/// A series present at both commits, on a common unit scale.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SeriesDelta {
+    #[prost(enumeration="Unit", tag="1")]
+    pub unit: i32,
+    #[prost(double, tag="2")]
+    pub base_mean: f64,
+    #[prost(double, tag="3")]
+    pub head_mean: f64,
+    #[prost(double, tag="4")]
+    pub diff: f64,
+    /// Unset when base_mean is zero: a true 0-to-0 non-change, or an unbounded
+    /// change whose direction is recoverable from diff's sign.
+    #[prost(double, optional, tag="5")]
+    pub diff_pct: ::core::option::Option<f64>,
+    #[prost(enumeration="Verdict", tag="6")]
+    pub verdict: i32,
+}
+/// A series present at only one of the two commits.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SeriesPoint {
+    #[prost(enumeration="Unit", tag="1")]
+    pub unit: i32,
+    #[prost(double, tag="2")]
+    pub mean: f64,
+}
+/// A series present at both commits, but on units with no common scale (e.g.
+/// bytes vs ratio).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnitMismatch {
+    #[prost(enumeration="Unit", tag="1")]
+    pub base_unit: i32,
+    #[prost(enumeration="Unit", tag="2")]
+    pub head_unit: i32,
+}
+/// A series whose stored mean is not a valid measurement (NaN or +-infinity)
+/// on at least one side. Protobuf `double` and the ClickHouse column both
+/// permit this, but no verdict can be computed from it.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InvalidMeasurement {
+    #[prost(string, tag="1")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// One series' outcome in a comparison. A oneof rather than a bag of optional
+/// fields, so e.g. "added" can't carry a base_mean and "incomparable" can't
+/// carry a percentage.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BenchmarkComparison {
+    #[prost(message, optional, tag="1")]
+    pub key: ::core::option::Option<SeriesKey>,
+    #[prost(oneof="benchmark_comparison::Outcome", tags="2, 3, 4, 5, 6")]
+    pub outcome: ::core::option::Option<benchmark_comparison::Outcome>,
+}
+/// Nested message and enum types in `BenchmarkComparison`.
+pub mod benchmark_comparison {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Outcome {
+        #[prost(message, tag="2")]
+        Compared(super::SeriesDelta),
+        #[prost(message, tag="3")]
+        Added(super::SeriesPoint),
+        #[prost(message, tag="4")]
+        Removed(super::SeriesPoint),
+        #[prost(message, tag="5")]
+        Incomparable(super::UnitMismatch),
+        #[prost(message, tag="6")]
+        Invalid(super::InvalidMeasurement),
+    }
+}
+/// Headline counts for a CompareCommitsResponse.
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ComparisonSummary {
+    #[prost(uint32, tag="1")]
+    pub regressed: u32,
+    #[prost(uint32, tag="2")]
+    pub improved: u32,
+    #[prost(uint32, tag="3")]
+    pub unchanged: u32,
+    #[prost(uint32, tag="4")]
+    pub added: u32,
+    #[prost(uint32, tag="5")]
+    pub removed: u32,
+    #[prost(double, tag="6")]
+    pub threshold_pct: f64,
+    #[prost(bool, tag="7")]
+    pub has_regressions: bool,
+    /// Count of series present at both commits but with no verdict (unit
+    /// mismatch, or a non-finite stored/derived value). Not folded into
+    /// `unchanged`.
+    #[prost(uint32, tag="8")]
+    pub unassessable: u32,
+}
+/// Request to compare benchmark results between two commits in a repository.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompareCommitsRequest {
+    /// Repository to query.
+    #[prost(message, optional, tag="1")]
+    pub repository: ::core::option::Option<RepositoryReference>,
+    /// Base commit SHA (the "before").
+    #[prost(string, tag="2")]
+    pub base_commit_sha: ::prost::alloc::string::String,
+    /// Head commit SHA (the "after").
+    #[prost(string, tag="3")]
+    pub head_commit_sha: ::prost::alloc::string::String,
+    /// Minimum absolute percent change for a series to be classified as
+    /// regressed/improved rather than unchanged. Defaults to 5.0.
+    #[prost(double, optional, tag="4")]
+    pub regression_threshold_pct: ::core::option::Option<f64>,
+}
+/// Response carrying the requested commit comparison.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompareCommitsResponse {
+    #[prost(message, repeated, tag="1")]
+    pub comparisons: ::prost::alloc::vec::Vec<BenchmarkComparison>,
+    #[prost(message, optional, tag="2")]
+    pub summary: ::core::option::Option<ComparisonSummary>,
+}
+/// Classification of a compared series' change relative to the request's
+/// regression threshold and the unit's higher-is-better/lower-is-better
+/// direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Verdict {
+    Unspecified = 0,
+    Unchanged = 1,
+    Regressed = 2,
+    Improved = 3,
+}
+impl Verdict {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "VERDICT_UNSPECIFIED",
+            Self::Unchanged => "VERDICT_UNCHANGED",
+            Self::Regressed => "VERDICT_REGRESSED",
+            Self::Improved => "VERDICT_IMPROVED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "VERDICT_UNSPECIFIED" => Some(Self::Unspecified),
+            "VERDICT_UNCHANGED" => Some(Self::Unchanged),
+            "VERDICT_REGRESSED" => Some(Self::Regressed),
+            "VERDICT_IMPROVED" => Some(Self::Improved),
+            _ => None,
+        }
+    }
 }
 include!("rafn.v1.tonic.rs");
 // @@protoc_insertion_point(module)

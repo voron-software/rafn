@@ -202,5 +202,32 @@ pub mod benchmark_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /** Compare benchmark results between two commits in a repository, classified
+ against a regression threshold.
+*/
+        pub async fn compare_commits(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CompareCommitsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CompareCommitsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/rafn.v1.BenchmarkService/CompareCommits",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("rafn.v1.BenchmarkService", "CompareCommits"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }

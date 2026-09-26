@@ -5,6 +5,7 @@ use prost::Message;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use crate::comparison;
 use crate::proto::benchmark::{
     statistic_mean_ns, statistic_median_ns, statistic_stddev_ns, timestamp_from_system_time,
     timestamp_to_millis,
@@ -157,6 +158,22 @@ impl Backend for LocalBackend {
 
         Ok(data_points)
     }
+
+    async fn compare_commits(
+        &self,
+        base: &str,
+        head: &str,
+        threshold_pct: f64,
+    ) -> Result<comparison::Report> {
+        let base_sets = self.benchmarks_for_commit(base).await?;
+        let head_sets = self.benchmarks_for_commit(head).await?;
+
+        Ok(comparison::compare(
+            &comparison::flatten_series(&base_sets),
+            &comparison::flatten_series(&head_sets),
+            threshold_pct,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +288,32 @@ mod tests {
 
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].benchmark_name, "kept");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compare_commits_over_two_snapshots() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LocalBackend::with_root(dir.path());
+
+        store.save("base", &[make_set("foo", 1_000_000.0)])?;
+        store.save("head", &[make_set("foo", 1_100_000.0)])?;
+
+        let report = store.compare_commits("base", "head", 5.0).await?;
+
+        assert_eq!(report.comparisons.len(), 1);
+        assert_eq!(report.summary.regressed, 1);
+        assert!(report.summary.has_regressions);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compare_commits_missing_snapshot_errors() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = LocalBackend::with_root(dir.path());
+        store.save("base", &[make_set("foo", 1_000_000.0)])?;
+
+        assert!(store.compare_commits("base", "missing", 5.0).await.is_err());
         Ok(())
     }
 }

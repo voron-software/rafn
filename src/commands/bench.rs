@@ -47,6 +47,7 @@ impl BenchCommand {
         let effective = EffectiveConfig::resolve(&repo_config, &user_config);
 
         let threshold = self.threshold.unwrap_or(effective.bench_threshold);
+        comparison::validate_threshold_pct(threshold)?;
         let repository = store::require_repository(&effective)?;
 
         let framework_config = framework::detect_framework(&self.args)?;
@@ -130,12 +131,14 @@ impl BenchCommand {
                 info!("No previous snapshot found — skipping regression check.");
             }
             Some(prev_benches) => {
-                let rows = comparison::compare(&prev_benches, &benchmark_sets);
-                if rows.is_empty() {
+                let base_series = comparison::flatten_series(&prev_benches);
+                let head_series = comparison::flatten_series(&benchmark_sets);
+                if base_series.is_empty() && head_series.is_empty() {
                     info!("No common benchmarks with previous snapshot.");
                 } else {
-                    comparison::print_table(&rows);
-                    regressed = comparison::has_regressions(&rows, threshold);
+                    let report = comparison::compare(&base_series, &head_series, threshold);
+                    comparison::print_report(&report);
+                    regressed = report.summary.has_regressions;
                     if regressed {
                         error!("✗ Regression detected (threshold: {threshold:.1}%)");
                     }
