@@ -66,7 +66,7 @@ pub fn metric_lower_is_better(unit: &str) -> bool {
 
 /// Identifies one benchmark series. `branch` is carried for display only —
 /// see [`compare`]'s doc comment for why it is not part of series identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SeriesKey {
     pub benchmark_name: String,
     pub metric_name: String,

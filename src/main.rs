@@ -3,8 +3,13 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use rafn::commands::{
-    bench::BenchCommand, bisect::BisectCommand, compare::CompareCommand, config::ConfigCommand,
-    init::InitCommand, push::PushCommand, trend::TrendCommand,
+    bench::BenchCommand,
+    bisect::{BisectCommand, BisectStepCommand},
+    compare::CompareCommand,
+    config::ConfigCommand,
+    init::InitCommand,
+    push::PushCommand,
+    trend::TrendCommand,
 };
 use tracing::error;
 use tracing_subscriber::EnvFilter;
@@ -35,8 +40,12 @@ enum Commands {
     /// Compare benchmarks between two commits
     Compare(CompareCommand),
 
-    /// Find the commit that introduced a regression (not yet implemented)
+    /// Find the commit that introduced a regression via `git bisect`
     Bisect(BisectCommand),
+
+    /// Classify the checked-out commit for `git bisect run` (internal)
+    #[command(name = "bisect-step", hide = true)]
+    BisectStep(BisectStepCommand),
 
     /// Manage configuration
     Config(ConfigCommand),
@@ -54,7 +63,10 @@ async fn main() -> ExitCode {
         Commands::Push(cmd) => cmd.execute().await,
         Commands::Trend(cmd) => cmd.execute().await,
         Commands::Compare(cmd) => cmd.execute().await,
-        Commands::Bisect(cmd) => cmd.execute().await,
+        // Bisect commands own their exit codes: `git bisect run` and the
+        // documented `rafn bisect` contract both need more than success/failure.
+        Commands::Bisect(cmd) => return cmd.execute(),
+        Commands::BisectStep(cmd) => return cmd.execute(),
         Commands::Config(cmd) => cmd.execute().await,
     };
 

@@ -63,6 +63,21 @@ pub enum ResultsStrategy {
     },
 }
 
+impl ResultsStrategy {
+    /// Create the directory the framework writes results into, since the
+    /// JSON-emitting frameworks fail rather than create it themselves.
+    pub fn ensure_dir(&self) -> std::io::Result<()> {
+        match self {
+            ResultsStrategy::JsonFile(path) => match path.parent() {
+                Some(parent) => std::fs::create_dir_all(parent),
+                None => Ok(()),
+            },
+            ResultsStrategy::JsonDirectory { dir, .. } => std::fs::create_dir_all(dir),
+            ResultsStrategy::CriterionDirectory(_) => Ok(()),
+        }
+    }
+}
+
 /// Configuration for a detected framework.
 #[derive(Debug, Clone)]
 pub struct FrameworkConfig {
@@ -76,7 +91,10 @@ pub fn detect_framework(passthrough_args: &[String]) -> Result<FrameworkConfig> 
     detect_framework_from(std::env::current_dir()?, passthrough_args)
 }
 
-fn detect_framework_from(start: PathBuf, passthrough_args: &[String]) -> Result<FrameworkConfig> {
+pub fn detect_framework_from(
+    start: PathBuf,
+    passthrough_args: &[String],
+) -> Result<FrameworkConfig> {
     let mut dir = start.as_path();
     loop {
         if dir.join("Cargo.toml").exists() {
