@@ -5,7 +5,8 @@
 //! search to `git bisect run`, which re-invokes this binary as the hidden
 //! `rafn bisect-step` subcommand at every candidate commit. The step is a
 //! separate process running under a checkout that keeps changing, so
-//! everything it needs is persisted in `.rafn/bisect/` at the git root.
+//! everything it needs is persisted in `rafn/bisect/` under the worktree's
+//! git directory, where a `git clean -fdx` build step can't delete it.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -25,7 +26,8 @@ use crate::framework::{self, ResultsStrategy};
 use crate::proto::benchmark::timestamp_now;
 use crate::{discovery, git, ingest, runner};
 
-const STATE_DIR: &str = ".rafn/bisect";
+/// Resolved with `git rev-parse --git-path`, i.e. inside `.git/`.
+const STATE_DIR: &str = "rafn/bisect";
 const SESSION_FILE: &str = "session.json";
 const PLAN_FILE: &str = "plan.json";
 const STEPS_DIR: &str = "steps";
@@ -186,6 +188,16 @@ struct Session {
     /// rafn's bisect apart from one the user started by hand.
     #[serde(default)]
     bisect: Option<BisectRange>,
+    /// Checkouts detach submodules; those that were on a branch go back to it.
+    #[serde(default)]
+    submodule_heads: Vec<SubmoduleHead>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SubmoduleHead {
+    /// Relative to the superproject root.
+    path: String,
+    head: OriginalHead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,7 +243,7 @@ fn run(request: Request) -> Result<BisectExit> {
     comparison::validate_threshold_pct(threshold_pct)?;
     let repository = effective.repository.unwrap_or_else(unpublished_repository);
 
-    let state_dir = repo.state_dir();
+    let state_dir = repo.state_dir()?;
     let session_path = state_dir.join(SESSION_FILE);
     // An interrupted session holds the only record of the user's original
     // checkout; starting over would replace it with a detached endpoint.
@@ -253,6 +265,7 @@ fn run(request: Request) -> Result<BisectExit> {
     let session = Session {
         original_head: repo.head()?,
         bisect: None,
+        submodule_heads: repo.submodule_heads()?,
     };
     write_json(&session_path, &session)?;
 
@@ -595,7 +608,7 @@ fn unpublished_repository() -> RepositoryRef {
 
 fn reset() -> Result<()> {
     let repo = Repo::discover()?;
-    let state_dir = repo.state_dir();
+    let state_dir = repo.state_dir()?;
     let session_path = state_dir.join(SESSION_FILE);
     if !session_path.exists() {
         ensure!(
@@ -630,6 +643,7 @@ fn cleanup(repo: &Repo, state_dir: &Path, session: &Session) -> Result<()> {
     } else {
         repo.restore(&session.original_head)?;
     }
+    repo.restore_submodule_heads(&session.submodule_heads)?;
     if state_dir.exists() {
         std::fs::remove_dir_all(state_dir)
             .with_context(|| format!("Failed to remove {}", state_dir.display()))?;
@@ -665,7 +679,11 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let json = serde_json::to_vec_pretty(value)?;
-    std::fs::write(path, json).with_context(|| format!("Failed to write {}", path.display()))
+    // Write-then-rename, so an interruption never leaves a truncated session
+    // that would stop `--reset` from recovering the original checkout.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).with_context(|| format!("Failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("Failed to write {}", path.display()))
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -700,8 +718,46 @@ impl Repo {
         Ok(Self { root })
     }
 
-    fn state_dir(&self) -> PathBuf {
-        self.root.join(STATE_DIR)
+    fn state_dir(&self) -> Result<PathBuf> {
+        Ok(self
+            .root
+            .join(self.git(&["rev-parse", "--git-path", STATE_DIR])?))
+    }
+
+    fn submodule(&self, path: &str) -> Repo {
+        Repo {
+            root: self.root.join(path),
+        }
+    }
+
+    /// HEADs of all initialized submodules, parents before children.
+    fn submodule_heads(&self) -> Result<Vec<SubmoduleHead>> {
+        self.git(&[
+            "submodule",
+            "foreach",
+            "--recursive",
+            "--quiet",
+            r#"echo "$displaypath""#,
+        ])?
+        .lines()
+        .map(|path| {
+            Ok(SubmoduleHead {
+                path: path.to_string(),
+                head: self.submodule(path).head()?,
+            })
+        })
+        .collect()
+    }
+
+    fn restore_submodule_heads(&self, heads: &[SubmoduleHead]) -> Result<()> {
+        for SubmoduleHead { path, head } in heads {
+            if let OriginalHead::Branch(branch) = head {
+                self.submodule(path)
+                    .git(&["checkout", "--quiet", branch])
+                    .with_context(|| format!("Failed to restore submodule {path} to {branch}"))?;
+            }
+        }
+        Ok(())
     }
 
     fn command(&self) -> Command {
@@ -805,7 +861,15 @@ impl Repo {
     }
 
     fn discard_tracked_changes(&self) -> Result<()> {
-        self.git(&["reset", "--hard", "--quiet"]).map(drop)
+        self.git(&["reset", "--hard", "--quiet"])?;
+        self.git(&[
+            "submodule",
+            "foreach",
+            "--recursive",
+            "--quiet",
+            "git reset --hard --quiet",
+        ])
+        .map(drop)
     }
 
     fn resolve_commit(&self, rev: &str) -> Result<String> {
@@ -1011,6 +1075,19 @@ mod tests {
 
         assert!(!criterion.exists());
         assert!(!json.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn write_json_replaces_atomically_without_leftovers() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let path = tmp.path().join("state/session.json");
+
+        write_json(&path, &vec![1])?;
+        write_json(&path, &vec![2])?;
+
+        assert_eq!(read_json::<Vec<i32>>(&path)?, [2]);
+        assert!(!path.with_extension("json.tmp").exists());
         Ok(())
     }
 

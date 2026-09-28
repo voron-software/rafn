@@ -20,6 +20,7 @@ done
 # Like `cargo bench` refreshing a stale Cargo.lock: the benchmark itself
 # dirties a tracked file.
 echo touched >> CMakeLists.txt
+[ -f lib/notes ] && echo touched >> lib/notes
 if [ -f lib/perf ]; then t=$(cat lib/perf); else t=$(cat perf); fi
 cat > "$out" <<JSON
 {"context":{},"benchmarks":[{"name":"BM_Work","run_type":"iteration","iterations":1000,"real_time":$t,"cpu_time":$t,"time_unit":"ns"}]}
@@ -97,13 +98,19 @@ impl Fixture {
             ),
             None => "null".to_string(),
         };
-        let state = self.path().join(".rafn/bisect");
+        let state = self.state_dir()?;
         std::fs::create_dir_all(state.join("steps"))?;
         std::fs::write(
             state.join("session.json"),
             format!(r#"{{"original_head":{{"Branch":"main"}},"bisect":{bisect}}}"#),
         )?;
         Ok(())
+    }
+
+    fn state_dir(&self) -> Result<PathBuf> {
+        Ok(self
+            .path()
+            .join(self.git(&["rev-parse", "--git-path", "rafn/bisect"])?))
     }
 
     fn path(&self) -> &Path {
@@ -138,7 +145,11 @@ impl Fixture {
     }
 
     fn bisect(&self, good: usize, bad: usize) -> Result<Output> {
-        self.rafn(&[
+        self.bisect_with(good, bad, &[])
+    }
+
+    fn bisect_with(&self, good: usize, bad: usize, extra: &[&str]) -> Result<Output> {
+        let mut args = vec![
             "bisect",
             "--good",
             &self.commits[good],
@@ -146,7 +157,9 @@ impl Fixture {
             &self.commits[bad],
             "--threshold",
             "10",
-        ])
+        ];
+        args.extend_from_slice(extra);
+        self.rafn(&args)
     }
 
     fn assert_restored(&self) -> Result<()> {
@@ -156,10 +169,7 @@ impl Fixture {
             !self.path().join(bisect_start).exists(),
             "git bisect still in progress"
         );
-        assert!(
-            !self.path().join(".rafn/bisect").exists(),
-            "bisect state left behind"
-        );
+        assert!(!self.state_dir()?.exists(), "bisect state left behind");
         assert_eq!(
             self.git(&["status", "--porcelain", "--untracked-files=no"])?,
             "",
@@ -213,7 +223,8 @@ fn finds_first_bad_commit_and_skips_broken_builds() -> Result<()> {
         Some(200),
     ])?;
 
-    let output = fixture.bisect(0, 7)?;
+    // A clean-build step must not wipe rafn's own bisect state.
+    let output = fixture.bisect_with(0, 7, &["--build-cmd", "git clean -fdxq"])?;
 
     assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -314,7 +325,7 @@ fn refuses_to_start_over_an_interrupted_session() -> Result<()> {
         "{}",
         describe(&output)
     );
-    assert!(fixture.path().join(".rafn/bisect/session.json").exists());
+    assert!(fixture.state_dir()?.join("session.json").exists());
     Ok(())
 }
 
@@ -371,7 +382,9 @@ fn finds_regression_introduced_by_a_submodule_bump() -> Result<()> {
     upstream_git(&["config", "user.name", "Test Author"])?;
     upstream_git(&["config", "user.email", "author@example.com"])?;
     std::fs::write(upstream.path().join("perf"), "100")?;
-    upstream_git(&["add", "perf"])?;
+    // The benchmark appends to this tracked file, dirtying the submodule.
+    std::fs::write(upstream.path().join("notes"), "")?;
+    upstream_git(&["add", "perf", "notes"])?;
     upstream_git(&["commit", "--quiet", "-m", "fast"])?;
     std::fs::write(upstream.path().join("perf"), "200")?;
     upstream_git(&["commit", "--quiet", "-am", "slow"])?;
@@ -400,7 +413,8 @@ fn finds_regression_introduced_by_a_submodule_bump() -> Result<()> {
     lib_git(&["checkout", "--quiet", &fast])?;
     fixture.commit("add lib")?;
     fixture.commit("unrelated")?;
-    lib_git(&["checkout", "--quiet", &slow])?;
+    // The user works in the submodule on a branch; bisect must put it back.
+    lib_git(&["checkout", "--quiet", "-B", "work", &slow])?;
     fixture.commit("bump lib")?;
     fixture.commit("unrelated again")?;
 
@@ -418,5 +432,9 @@ fn finds_regression_introduced_by_a_submodule_bump() -> Result<()> {
         std::fs::read_to_string(fixture.path().join("lib/perf"))?,
         "200"
     );
+    let lib_head = isolated_git_env(Command::new("git").args(["symbolic-ref", "--short", "HEAD"]))
+        .current_dir(&lib_dir)
+        .output()?;
+    assert_eq!(String::from_utf8_lossy(&lib_head.stdout).trim(), "work");
     Ok(())
 }
