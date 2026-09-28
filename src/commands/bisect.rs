@@ -179,9 +179,19 @@ enum OriginalHead {
 
 /// Written before the first checkout so `rafn bisect --reset` can restore the
 /// user's checkout even if rafn dies during phase 1.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Session {
     original_head: OriginalHead,
+    /// Set once rafn runs `git bisect start`, so a later reset can tell
+    /// rafn's bisect apart from one the user started by hand.
+    #[serde(default)]
+    bisect: Option<BisectRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BisectRange {
+    bad: String,
+    good: String,
 }
 
 /// Everything `rafn bisect-step` needs, written once the baseline is known.
@@ -222,30 +232,44 @@ fn run(request: Request) -> Result<BisectExit> {
     let repository = effective.repository.unwrap_or_else(unpublished_repository);
 
     let state_dir = repo.state_dir();
+    let session_path = state_dir.join(SESSION_FILE);
+    // An interrupted session holds the only record of the user's original
+    // checkout; starting over would replace it with a detached endpoint.
+    ensure!(
+        !session_path.exists(),
+        "An interrupted rafn bisect session exists. Run `rafn bisect --reset` first."
+    );
+    let collisions = repo.ignored_collisions(&good, &bad)?;
+    ensure!(
+        collisions.is_empty(),
+        "These ignored paths are tracked by commits in the bisect range, so checking \
+         those commits out would overwrite them: {}. Move them aside and retry.",
+        collisions.join(", ")
+    );
     if state_dir.exists() {
         std::fs::remove_dir_all(&state_dir)
             .with_context(|| format!("Failed to clear stale {}", state_dir.display()))?;
     }
-    let original_head = repo.head()?;
-    write_json(
-        &state_dir.join(SESSION_FILE),
-        &Session {
-            original_head: original_head.clone(),
-        },
-    )?;
+    let session = Session {
+        original_head: repo.head()?,
+        bisect: None,
+    };
+    write_json(&session_path, &session)?;
 
-    let session = SessionInputs {
+    let inputs = SessionInputs {
         repo: &repo,
         state_dir: &state_dir,
-        original_head: &original_head,
+        session: session.clone(),
         good,
         bad,
         threshold_pct,
         repository,
         spec: request.spec,
     };
-    let outcome = run_session(session);
-    let cleanup = cleanup(&repo, &state_dir, &original_head);
+    let outcome = run_session(inputs);
+    // Re-read: `run_session` records the bisect it starts in the session file.
+    let session = read_json(&session_path).unwrap_or(session);
+    let cleanup = cleanup(&repo, &state_dir, &session);
     match (outcome, cleanup) {
         (Ok(exit), Ok(())) => Ok(exit),
         (Ok(_), Err(err)) => Err(err),
@@ -262,7 +286,7 @@ fn run(request: Request) -> Result<BisectExit> {
 struct SessionInputs<'a> {
     repo: &'a Repo,
     state_dir: &'a Path,
-    original_head: &'a OriginalHead,
+    session: Session,
     good: String,
     bad: String,
     threshold_pct: f64,
@@ -274,7 +298,7 @@ fn run_session(inputs: SessionInputs<'_>) -> Result<BisectExit> {
     let SessionInputs {
         repo,
         state_dir,
-        original_head,
+        mut session,
         good,
         bad,
         threshold_pct,
@@ -284,17 +308,20 @@ fn run_session(inputs: SessionInputs<'_>) -> Result<BisectExit> {
 
     info!("Benchmarking good commit {good}");
     repo.checkout_detached(&good)?;
-    let good_series = measure(&spec, &good, &repository)
-        .with_context(|| format!("Failed to benchmark good commit {good}"))?;
+    let good_series = measure(&spec, &good, &repository);
+    repo.discard_tracked_changes()?;
+    let good_series =
+        good_series.with_context(|| format!("Failed to benchmark good commit {good}"))?;
 
     info!("Benchmarking bad commit {bad}");
     repo.checkout_detached(&bad)?;
-    let bad_series = measure(&spec, &bad, &repository)
-        .with_context(|| format!("Failed to benchmark bad commit {bad}"))?;
+    let bad_series = measure(&spec, &bad, &repository);
+    repo.discard_tracked_changes()?;
+    let bad_series = bad_series.with_context(|| format!("Failed to benchmark bad commit {bad}"))?;
 
     // `git bisect reset` returns to whatever HEAD was at `git bisect start`,
     // so start from the user's own checkout rather than from `bad`.
-    repo.restore(original_head)?;
+    repo.restore(&session.original_head)?;
 
     let report = comparison::compare(&good_series, &bad_series, threshold_pct);
     comparison::print_report(&report);
@@ -320,6 +347,11 @@ fn run_session(inputs: SessionInputs<'_>) -> Result<BisectExit> {
         },
     )?;
 
+    session.bisect = Some(BisectRange {
+        bad: bad.clone(),
+        good: good.clone(),
+    });
+    write_json(&state_dir.join(SESSION_FILE), &session)?;
     repo.git(&["bisect", "start", &bad, &good])?;
     let exe = std::env::current_exe().context("Failed to locate the rafn executable")?;
     let status = repo
@@ -373,7 +405,15 @@ fn step(plan_path: &Path) -> StepVerdict {
         warn!("Skipping {commit}: {err:#}");
         return StepVerdict::Skip;
     }
-    let series = match measure(&plan.spec, &commit, &plan.repository) {
+    let series = measure(&plan.spec, &commit, &plan.repository);
+    // The tree was clean when rafn started, so any tracked change is the
+    // benchmark's own (e.g. a rewritten Cargo.lock) and would otherwise ride
+    // along into the next candidate's checkout.
+    if let Err(err) = repo.discard_tracked_changes() {
+        error!("{err:#}");
+        return StepVerdict::Abort;
+    }
+    let series = match series {
         Ok(series) => series,
         Err(err) => {
             warn!("Skipping {commit}: {err:#}");
@@ -383,7 +423,7 @@ fn step(plan_path: &Path) -> StepVerdict {
 
     let report = comparison::compare(&plan.baseline, &series, plan.threshold_pct);
     let Some(verdict) = step_verdict(&report) else {
-        warn!("Skipping {commit}: none of the regressed benchmarks could be measured");
+        warn!("Skipping {commit}: not every regressed benchmark could be measured");
         return StepVerdict::Skip;
     };
     comparison::print_report(&report);
@@ -571,17 +611,24 @@ fn reset() -> Result<()> {
     }
 
     let session: Session = read_json(&session_path)?;
-    cleanup(&repo, &state_dir, &session.original_head)?;
+    cleanup(&repo, &state_dir, &session)?;
     info!("Bisect state cleaned up.");
     Ok(())
 }
 
-fn cleanup(repo: &Repo, state_dir: &Path, original_head: &OriginalHead) -> Result<()> {
+fn cleanup(repo: &Repo, state_dir: &Path, session: &Session) -> Result<()> {
     if repo.bisect_in_progress()? {
+        // A stale session file must not license resetting a bisect the user
+        // started by hand after rafn's own one ended.
+        ensure!(
+            repo.bisect_started_as(session.bisect.as_ref())?,
+            "A git bisect not started by this rafn session is in progress; leaving it \
+             alone. End it with `git bisect reset`, then rerun `rafn bisect --reset`."
+        );
         repo.git(&["bisect", "reset"])?;
         repo.sync_submodules()?;
     } else {
-        repo.restore(original_head)?;
+        repo.restore(&session.original_head)?;
     }
     if state_dir.exists() {
         std::fs::remove_dir_all(state_dir)
@@ -690,6 +737,75 @@ impl Repo {
     fn bisect_in_progress(&self) -> Result<bool> {
         let path = self.git(&["rev-parse", "--git-path", "BISECT_START"])?;
         Ok(self.root.join(path).exists())
+    }
+
+    /// Whether the in-progress bisect was started with exactly `range`.
+    fn bisect_started_as(&self, range: Option<&BisectRange>) -> Result<bool> {
+        let Some(range) = range else {
+            return Ok(false);
+        };
+        let log = self.git(&["bisect", "log"])?;
+        Ok(log
+            .lines()
+            .find(|line| line.starts_with("git bisect start"))
+            .is_some_and(|line| line.contains(&range.bad) && line.contains(&range.good)))
+    }
+
+    /// `git checkout` overwrites ignored files by default, and `git bisect`
+    /// gives no way to change that, so refuse up front when an ignored path
+    /// exists that some candidate commit tracks. Candidates' trees only
+    /// contain paths from `good`'s tree or touched between good and bad.
+    fn ignored_collisions(&self, good: &str, bad: &str) -> Result<Vec<String>> {
+        let ignored = self.git(&[
+            "-c",
+            "core.quotepath=off",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ])?;
+        if ignored.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tracked: std::collections::BTreeSet<String> = self
+            .git(&[
+                "-c",
+                "core.quotepath=off",
+                "ls-tree",
+                "-r",
+                "--name-only",
+                good,
+            ])?
+            .lines()
+            .map(str::to_string)
+            .collect();
+        tracked.extend(
+            self.git(&[
+                "-c",
+                "core.quotepath=off",
+                "log",
+                "--format=",
+                "--name-only",
+                &format!("{good}..{bad}"),
+            ])?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string),
+        );
+        Ok(ignored
+            .lines()
+            .filter(|path| match path.strip_suffix('/') {
+                // `--directory` collapses wholly-ignored directories.
+                Some(_) => tracked.iter().any(|t| t.starts_with(path)),
+                None => tracked.contains(*path),
+            })
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn discard_tracked_changes(&self) -> Result<()> {
+        self.git(&["reset", "--hard", "--quiet"]).map(drop)
     }
 
     fn resolve_commit(&self, rev: &str) -> Result<String> {

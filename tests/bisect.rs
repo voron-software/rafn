@@ -17,6 +17,9 @@ const BENCH_SCRIPT: &str = r#"#!/bin/sh
 for arg in "$@"; do
   case "$arg" in --benchmark_out=*) out="${arg#--benchmark_out=}" ;; esac
 done
+# Like `cargo bench` refreshing a stale Cargo.lock: the benchmark itself
+# dirties a tracked file.
+echo touched >> CMakeLists.txt
 if [ -f lib/perf ]; then t=$(cat lib/perf); else t=$(cat perf); fi
 cat > "$out" <<JSON
 {"context":{},"benchmarks":[{"name":"BM_Work","run_type":"iteration","iterations":1000,"real_time":$t,"cpu_time":$t,"time_unit":"ns"}]}
@@ -84,6 +87,25 @@ impl Fixture {
         Ok(())
     }
 
+    /// The session file an interrupted `rafn bisect` leaves behind, with the
+    /// (bad, good) commit indices of the bisect it started, if any.
+    fn write_session(&self, bisect: Option<(usize, usize)>) -> Result<()> {
+        let bisect = match bisect {
+            Some((bad, good)) => format!(
+                r#"{{"bad":"{}","good":"{}"}}"#,
+                self.commits[bad], self.commits[good]
+            ),
+            None => "null".to_string(),
+        };
+        let state = self.path().join(".rafn/bisect");
+        std::fs::create_dir_all(state.join("steps"))?;
+        std::fs::write(
+            state.join("session.json"),
+            format!(r#"{{"original_head":{{"Branch":"main"}},"bisect":{bisect}}}"#),
+        )?;
+        Ok(())
+    }
+
     fn path(&self) -> &Path {
         self.repo.path()
     }
@@ -137,6 +159,11 @@ impl Fixture {
         assert!(
             !self.path().join(".rafn/bisect").exists(),
             "bisect state left behind"
+        );
+        assert_eq!(
+            self.git(&["status", "--porcelain", "--untracked-files=no"])?,
+            "",
+            "tracked files left modified"
         );
         Ok(())
     }
@@ -238,17 +265,82 @@ fn exits_2_on_dirty_tree_without_checking_anything_out() -> Result<()> {
 fn reset_cleans_up_an_interrupted_session() -> Result<()> {
     let fixture = Fixture::new(&[Some(100), Some(100), Some(200), Some(200)])?;
     // State an interrupted `rafn bisect` leaves behind mid-search.
-    let state = fixture.path().join(".rafn/bisect");
-    std::fs::create_dir_all(state.join("steps"))?;
-    std::fs::write(
-        state.join("session.json"),
-        r#"{"original_head":{"Branch":"main"}}"#,
-    )?;
+    fixture.write_session(Some((3, 0)))?;
     fixture.git(&["bisect", "start", &fixture.commits[3], &fixture.commits[0]])?;
 
     let output = fixture.rafn(&["bisect", "--reset"])?;
 
     assert!(output.status.success(), "{}", describe(&output));
+    fixture.assert_restored()
+}
+
+#[test]
+fn reset_restores_checkout_after_interruption_during_baseline() -> Result<()> {
+    let fixture = Fixture::new(&[Some(100), Some(200)])?;
+    fixture.write_session(None)?;
+    fixture.git(&["checkout", "--quiet", "--detach", &fixture.commits[0]])?;
+
+    let output = fixture.rafn(&["bisect", "--reset"])?;
+
+    assert!(output.status.success(), "{}", describe(&output));
+    fixture.assert_restored()
+}
+
+#[test]
+fn reset_leaves_a_manual_bisect_alone_despite_stale_session() -> Result<()> {
+    let fixture = Fixture::new(&[Some(100), Some(100), Some(200)])?;
+    // rafn's own bisect covered 2..0; the user later started 2..1 by hand.
+    fixture.write_session(Some((2, 0)))?;
+    fixture.git(&["bisect", "start", &fixture.commits[2], &fixture.commits[1]])?;
+
+    let output = fixture.rafn(&["bisect", "--reset"])?;
+
+    assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
+    let bisect_start = fixture.git(&["rev-parse", "--git-path", "BISECT_START"])?;
+    assert!(fixture.path().join(bisect_start).exists());
+    Ok(())
+}
+
+#[test]
+fn refuses_to_start_over_an_interrupted_session() -> Result<()> {
+    let fixture = Fixture::new(&[Some(100), Some(200)])?;
+    fixture.write_session(None)?;
+
+    let output = fixture.bisect(0, 1)?;
+
+    assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("rafn bisect --reset"),
+        "{}",
+        describe(&output)
+    );
+    assert!(fixture.path().join(".rafn/bisect/session.json").exists());
+    Ok(())
+}
+
+#[test]
+fn refuses_when_a_checkout_would_overwrite_an_ignored_file() -> Result<()> {
+    let mut fixture = Fixture::new(&[Some(100)])?;
+    std::fs::write(fixture.path().join("generated.txt"), "committed")?;
+    fixture.commit("track generated.txt")?;
+    fixture.git(&["rm", "--quiet", "--cached", "generated.txt"])?;
+    std::fs::write(fixture.path().join(".gitignore"), ".rafn/\ngenerated.txt\n")?;
+    std::fs::write(fixture.path().join("perf"), "200")?;
+    fixture.commit("stop tracking generated.txt")?;
+    std::fs::write(fixture.path().join("generated.txt"), "precious")?;
+
+    let output = fixture.bisect(1, 2)?;
+
+    assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("generated.txt"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("generated.txt"))?,
+        "precious"
+    );
     fixture.assert_restored()
 }
 
