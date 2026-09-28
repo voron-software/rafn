@@ -7,6 +7,11 @@
 //! separate process running under a checkout that keeps changing, so
 //! everything it needs is persisted in `rafn/bisect/` under the worktree's
 //! git directory, where a `git clean -fdx` build step can't delete it.
+//!
+//! Working-tree semantics deliberately match `git bisect run` with
+//! `rafn bisect-step` as the script: rafn adds no handling of submodules,
+//! ignored files, or files the benchmark modifies beyond what `git bisect`
+//! itself does.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -188,16 +193,6 @@ struct Session {
     /// rafn's bisect apart from one the user started by hand.
     #[serde(default)]
     bisect: Option<BisectRange>,
-    /// Checkouts detach submodules; those that were on a branch go back to it.
-    #[serde(default)]
-    submodule_heads: Vec<SubmoduleHead>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SubmoduleHead {
-    /// Relative to the superproject root.
-    path: String,
-    head: OriginalHead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,13 +246,6 @@ fn run(request: Request) -> Result<BisectExit> {
         !session_path.exists(),
         "An interrupted rafn bisect session exists. Run `rafn bisect --reset` first."
     );
-    let collisions = repo.ignored_collisions(&good, &bad)?;
-    ensure!(
-        collisions.is_empty(),
-        "These ignored paths are tracked by commits in the bisect range, so checking \
-         those commits out would overwrite them: {}. Move them aside and retry.",
-        collisions.join(", ")
-    );
     if state_dir.exists() {
         std::fs::remove_dir_all(&state_dir)
             .with_context(|| format!("Failed to clear stale {}", state_dir.display()))?;
@@ -265,7 +253,6 @@ fn run(request: Request) -> Result<BisectExit> {
     let session = Session {
         original_head: repo.head()?,
         bisect: None,
-        submodule_heads: repo.submodule_heads()?,
     };
     write_json(&session_path, &session)?;
 
@@ -321,16 +308,13 @@ fn run_session(inputs: SessionInputs<'_>) -> Result<BisectExit> {
 
     info!("Benchmarking good commit {good}");
     repo.checkout_detached(&good)?;
-    let good_series = measure(&spec, &good, &repository);
-    repo.discard_tracked_changes()?;
-    let good_series =
-        good_series.with_context(|| format!("Failed to benchmark good commit {good}"))?;
+    let good_series = measure(&spec, &good, &repository)
+        .with_context(|| format!("Failed to benchmark good commit {good}"))?;
 
     info!("Benchmarking bad commit {bad}");
     repo.checkout_detached(&bad)?;
-    let bad_series = measure(&spec, &bad, &repository);
-    repo.discard_tracked_changes()?;
-    let bad_series = bad_series.with_context(|| format!("Failed to benchmark bad commit {bad}"))?;
+    let bad_series = measure(&spec, &bad, &repository)
+        .with_context(|| format!("Failed to benchmark bad commit {bad}"))?;
 
     // `git bisect reset` returns to whatever HEAD was at `git bisect start`,
     // so start from the user's own checkout rather than from `bad`.
@@ -414,19 +398,7 @@ fn step(plan_path: &Path) -> StepVerdict {
         }
     };
 
-    if let Err(err) = repo.sync_submodules() {
-        warn!("Skipping {commit}: {err:#}");
-        return StepVerdict::Skip;
-    }
-    let series = measure(&plan.spec, &commit, &plan.repository);
-    // The tree was clean when rafn started, so any tracked change is the
-    // benchmark's own (e.g. a rewritten Cargo.lock) and would otherwise ride
-    // along into the next candidate's checkout.
-    if let Err(err) = repo.discard_tracked_changes() {
-        error!("{err:#}");
-        return StepVerdict::Abort;
-    }
-    let series = match series {
+    let series = match measure(&plan.spec, &commit, &plan.repository) {
         Ok(series) => series,
         Err(err) => {
             warn!("Skipping {commit}: {err:#}");
@@ -639,11 +611,9 @@ fn cleanup(repo: &Repo, state_dir: &Path, session: &Session) -> Result<()> {
              alone. End it with `git bisect reset`, then rerun `rafn bisect --reset`."
         );
         repo.git(&["bisect", "reset"])?;
-        repo.sync_submodules()?;
     } else {
         repo.restore(&session.original_head)?;
     }
-    repo.restore_submodule_heads(&session.submodule_heads)?;
     if state_dir.exists() {
         std::fs::remove_dir_all(state_dir)
             .with_context(|| format!("Failed to remove {}", state_dir.display()))?;
@@ -667,20 +637,6 @@ fn print_culprit(commit: &CommitInfo, report: &Report) {
     println!("    {}", commit.subject);
     println!();
     comparison::print_report(report);
-}
-
-/// Whether checking out `tracked` would clobber the ignored `ignored` path:
-/// the same path, or one nested inside the other (a file where the other
-/// side needs a directory). `ls-files --directory` marks collapsed ignored
-/// directories with a trailing `/`.
-fn paths_collide(ignored: &str, tracked: &str) -> bool {
-    let ignored = ignored.trim_end_matches('/');
-    let nested = |outer: &str, inner: &str| {
-        inner
-            .strip_prefix(outer)
-            .is_some_and(|rest| rest.starts_with('/'))
-    };
-    ignored == tracked || nested(ignored, tracked) || nested(tracked, ignored)
 }
 
 fn step_path(state_dir: &Path, commit: &str) -> PathBuf {
@@ -738,42 +694,6 @@ impl Repo {
             .join(self.git(&["rev-parse", "--git-path", STATE_DIR])?))
     }
 
-    fn submodule(&self, path: &str) -> Repo {
-        Repo {
-            root: self.root.join(path),
-        }
-    }
-
-    /// HEADs of all initialized submodules, parents before children.
-    fn submodule_heads(&self) -> Result<Vec<SubmoduleHead>> {
-        self.git(&[
-            "submodule",
-            "foreach",
-            "--recursive",
-            "--quiet",
-            r#"echo "$displaypath""#,
-        ])?
-        .lines()
-        .map(|path| {
-            Ok(SubmoduleHead {
-                path: path.to_string(),
-                head: self.submodule(path).head()?,
-            })
-        })
-        .collect()
-    }
-
-    fn restore_submodule_heads(&self, heads: &[SubmoduleHead]) -> Result<()> {
-        for SubmoduleHead { path, head } in heads {
-            if let OriginalHead::Branch(branch) = head {
-                self.submodule(path)
-                    .git(&["checkout", "--quiet", branch])
-                    .with_context(|| format!("Failed to restore submodule {path} to {branch}"))?;
-            }
-        }
-        Ok(())
-    }
-
     fn command(&self) -> Command {
         let mut command = Command::new("git");
         command.arg("-C").arg(&self.root);
@@ -798,16 +718,9 @@ impl Repo {
 
     fn is_dirty(&self) -> Result<bool> {
         // Untracked files can't be clobbered by checkouts, and build output
-        // like `target/` is routinely left untracked. An explicit
-        // `--ignore-submodules` overrides `submodule.<name>.ignore = all`,
-        // which would otherwise hide edits the per-step reset then deletes.
+        // like `target/` is routinely left untracked.
         Ok(!self
-            .git(&[
-                "status",
-                "--porcelain",
-                "--untracked-files=no",
-                "--ignore-submodules=untracked",
-            ])?
+            .git(&["status", "--porcelain", "--untracked-files=no"])?
             .is_empty())
     }
 
@@ -828,67 +741,6 @@ impl Repo {
             .is_some_and(|line| line.contains(&range.bad) && line.contains(&range.good)))
     }
 
-    /// `git checkout` overwrites ignored files by default, and `git bisect`
-    /// gives no way to change that, so refuse up front when an ignored path
-    /// exists that some candidate commit tracks. Candidates' trees only
-    /// contain paths from `good`'s tree or touched between good and bad.
-    fn ignored_collisions(&self, good: &str, bad: &str) -> Result<Vec<String>> {
-        let ignored = self.git(&[
-            "-c",
-            "core.quotepath=off",
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ])?;
-        if ignored.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut tracked: std::collections::BTreeSet<String> = self
-            .git(&[
-                "-c",
-                "core.quotepath=off",
-                "ls-tree",
-                "-r",
-                "--name-only",
-                good,
-            ])?
-            .lines()
-            .map(str::to_string)
-            .collect();
-        tracked.extend(
-            self.git(&[
-                "-c",
-                "core.quotepath=off",
-                "log",
-                "--format=",
-                "--name-only",
-                &format!("{good}..{bad}"),
-            ])?
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_string),
-        );
-        Ok(ignored
-            .lines()
-            .filter(|path| tracked.iter().any(|t| paths_collide(path, t)))
-            .map(str::to_string)
-            .collect())
-    }
-
-    fn discard_tracked_changes(&self) -> Result<()> {
-        self.git(&["reset", "--hard", "--quiet"])?;
-        self.git(&[
-            "submodule",
-            "foreach",
-            "--recursive",
-            "--quiet",
-            "git reset --hard --quiet",
-        ])
-        .map(drop)
-    }
-
     fn resolve_commit(&self, rev: &str) -> Result<String> {
         self.git(&[
             "rev-parse",
@@ -907,25 +759,16 @@ impl Repo {
     }
 
     fn checkout_detached(&self, commit: &str) -> Result<()> {
-        self.git(&["checkout", "--quiet", "--detach", commit])?;
-        self.sync_submodules()
+        self.git(&["checkout", "--quiet", "--detach", commit])
+            .map(drop)
     }
 
     fn restore(&self, head: &OriginalHead) -> Result<()> {
         match head {
             OriginalHead::Branch(branch) => self.git(&["checkout", "--quiet", branch]),
             OriginalHead::Detached(sha) => self.git(&["checkout", "--quiet", "--detach", sha]),
-        }?;
-        self.sync_submodules()
-    }
-
-    /// Checkouts (ours and `git bisect`'s) move only the superproject's
-    /// gitlinks; without this a regression from a submodule bump measures
-    /// identically on both sides. Deliberately no `--init`: submodules the
-    /// user never initialized stay untouched.
-    fn sync_submodules(&self) -> Result<()> {
-        self.git(&["submodule", "update", "--recursive", "--quiet"])
-            .map(drop)
+        }
+        .map(drop)
     }
 
     fn describe(&self, commit: &str) -> Result<CommitInfo> {
@@ -1106,20 +949,6 @@ mod tests {
         assert_eq!(read_json::<Vec<i32>>(&path)?, [2]);
         assert!(!path.with_extension("json.tmp").exists());
         Ok(())
-    }
-
-    #[test]
-    fn paths_collide_on_equal_or_nested_paths_only() {
-        assert!(paths_collide("gen.txt", "gen.txt"));
-        assert!(paths_collide("out/", "out/data.bin"));
-        assert!(paths_collide("foo", "foo/bar"), "ignored file, tracked dir");
-        assert!(paths_collide("foo/", "foo"), "ignored dir, tracked file");
-        assert!(
-            paths_collide("foo/bar", "foo"),
-            "tracked file replaces parent dir"
-        );
-        assert!(!paths_collide("foo", "foobar"));
-        assert!(!paths_collide("out/", "output.txt"));
     }
 
     #[test]

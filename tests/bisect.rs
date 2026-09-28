@@ -17,11 +17,7 @@ const BENCH_SCRIPT: &str = r#"#!/bin/sh
 for arg in "$@"; do
   case "$arg" in --benchmark_out=*) out="${arg#--benchmark_out=}" ;; esac
 done
-# Like `cargo bench` refreshing a stale Cargo.lock: the benchmark itself
-# dirties a tracked file.
-echo touched >> CMakeLists.txt
-[ -f lib/notes ] && echo touched >> lib/notes
-if [ -f lib/perf ]; then t=$(cat lib/perf); else t=$(cat perf); fi
+t=$(cat perf)
 cat > "$out" <<JSON
 {"context":{},"benchmarks":[{"name":"BM_Work","run_type":"iteration","iterations":1000,"real_time":$t,"cpu_time":$t,"time_unit":"ns"}]}
 JSON
@@ -81,15 +77,6 @@ impl Fixture {
         Ok(fixture)
     }
 
-    fn commit(&mut self, message: &str) -> Result<()> {
-        self.git(&["add", "--all"])?;
-        self.git(&["commit", "--quiet", "--allow-empty", "-m", message])?;
-        self.commits.push(self.git(&["rev-parse", "HEAD"])?);
-        Ok(())
-    }
-
-    /// The session file an interrupted `rafn bisect` leaves behind, with the
-    /// (bad, good) commit indices of the bisect it started, if any.
     fn write_session(&self, bisect: Option<(usize, usize)>) -> Result<()> {
         let bisect = match bisect {
             Some((bad, good)) => format!(
@@ -313,50 +300,6 @@ fn reset_leaves_a_manual_bisect_alone_despite_stale_session() -> Result<()> {
 }
 
 #[test]
-fn treats_edits_in_an_ignore_all_submodule_as_dirty() -> Result<()> {
-    let upstream = TempDir::new()?;
-    let upstream_git = |args: &[&str]| -> Result<()> {
-        let output = isolated_git_env(Command::new("git").args(args))
-            .current_dir(upstream.path())
-            .output()?;
-        ensure!(output.status.success(), "git {args:?} failed");
-        Ok(())
-    };
-    upstream_git(&["init", "--quiet", "--initial-branch=main"])?;
-    upstream_git(&["config", "user.name", "Test Author"])?;
-    upstream_git(&["config", "user.email", "author@example.com"])?;
-    std::fs::write(upstream.path().join("notes"), "original")?;
-    upstream_git(&["add", "notes"])?;
-    upstream_git(&["commit", "--quiet", "-m", "notes"])?;
-
-    let mut fixture = Fixture::new(&[Some(100)])?;
-    let upstream_path = upstream.path().to_string_lossy().to_string();
-    fixture.git(&[
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        "--quiet",
-        &upstream_path,
-        "lib",
-    ])?;
-    fixture.commit("add lib")?;
-    std::fs::write(fixture.path().join("perf"), "200")?;
-    fixture.commit("slow")?;
-    fixture.git(&["config", "submodule.lib.ignore", "all"])?;
-    std::fs::write(fixture.path().join("lib/notes"), "uncommitted edit")?;
-
-    let output = fixture.bisect(1, 2)?;
-
-    assert_eq!(output.status.code(), Some(2), "{}", describe(&output));
-    assert_eq!(
-        std::fs::read_to_string(fixture.path().join("lib/notes"))?,
-        "uncommitted edit"
-    );
-    Ok(())
-}
-
-#[test]
 fn refuses_to_start_over_an_interrupted_session() -> Result<()> {
     let fixture = Fixture::new(&[Some(100), Some(200)])?;
     fixture.write_session(None)?;
@@ -374,32 +317,6 @@ fn refuses_to_start_over_an_interrupted_session() -> Result<()> {
 }
 
 #[test]
-fn refuses_when_a_checkout_would_overwrite_an_ignored_file() -> Result<()> {
-    let mut fixture = Fixture::new(&[Some(100)])?;
-    std::fs::write(fixture.path().join("generated.txt"), "committed")?;
-    fixture.commit("track generated.txt")?;
-    fixture.git(&["rm", "--quiet", "--cached", "generated.txt"])?;
-    std::fs::write(fixture.path().join(".gitignore"), ".rafn/\ngenerated.txt\n")?;
-    std::fs::write(fixture.path().join("perf"), "200")?;
-    fixture.commit("stop tracking generated.txt")?;
-    std::fs::write(fixture.path().join("generated.txt"), "precious")?;
-
-    let output = fixture.bisect(1, 2)?;
-
-    assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("generated.txt"),
-        "{}",
-        describe(&output)
-    );
-    assert_eq!(
-        std::fs::read_to_string(fixture.path().join("generated.txt"))?,
-        "precious"
-    );
-    fixture.assert_restored()
-}
-
-#[test]
 fn reset_leaves_a_foreign_git_bisect_alone() -> Result<()> {
     let fixture = Fixture::new(&[Some(100), Some(100), Some(200)])?;
     fixture.git(&["bisect", "start", &fixture.commits[2], &fixture.commits[0]])?;
@@ -409,76 +326,5 @@ fn reset_leaves_a_foreign_git_bisect_alone() -> Result<()> {
     assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
     let bisect_start = fixture.git(&["rev-parse", "--git-path", "BISECT_START"])?;
     assert!(fixture.path().join(bisect_start).exists());
-    Ok(())
-}
-
-#[test]
-fn finds_regression_introduced_by_a_submodule_bump() -> Result<()> {
-    let upstream = TempDir::new()?;
-    let upstream_git = |args: &[&str]| -> Result<String> {
-        let output = isolated_git_env(Command::new("git").args(args))
-            .current_dir(upstream.path())
-            .output()?;
-        ensure!(output.status.success(), "git {args:?} failed");
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    };
-    upstream_git(&["init", "--quiet", "--initial-branch=main"])?;
-    upstream_git(&["config", "user.name", "Test Author"])?;
-    upstream_git(&["config", "user.email", "author@example.com"])?;
-    std::fs::write(upstream.path().join("perf"), "100")?;
-    // The benchmark appends to this tracked file, dirtying the submodule.
-    std::fs::write(upstream.path().join("notes"), "")?;
-    upstream_git(&["add", "perf", "notes"])?;
-    upstream_git(&["commit", "--quiet", "-m", "fast"])?;
-    std::fs::write(upstream.path().join("perf"), "200")?;
-    upstream_git(&["commit", "--quiet", "-am", "slow"])?;
-    let slow = upstream_git(&["rev-parse", "HEAD"])?;
-    let fast = upstream_git(&["rev-parse", "HEAD~1"])?;
-
-    let mut fixture = Fixture::new(&[Some(100)])?;
-    let upstream_path = upstream.path().to_string_lossy().to_string();
-    fixture.git(&[
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        "--quiet",
-        &upstream_path,
-        "lib",
-    ])?;
-    let lib_dir = fixture.path().join("lib");
-    let lib_git = |args: &[&str]| -> Result<()> {
-        let output = isolated_git_env(Command::new("git").args(args))
-            .current_dir(&lib_dir)
-            .output()?;
-        ensure!(output.status.success(), "git {args:?} failed");
-        Ok(())
-    };
-    lib_git(&["checkout", "--quiet", &fast])?;
-    fixture.commit("add lib")?;
-    fixture.commit("unrelated")?;
-    // The user works in the submodule on a branch; bisect must put it back.
-    lib_git(&["checkout", "--quiet", "-B", "work", &slow])?;
-    fixture.commit("bump lib")?;
-    fixture.commit("unrelated again")?;
-
-    let output = fixture.bisect(1, 4)?;
-
-    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
-    assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains(&format!("First bad commit: {}", fixture.commits[3])),
-        "{}",
-        describe(&output)
-    );
-    fixture.assert_restored()?;
-    assert_eq!(
-        std::fs::read_to_string(fixture.path().join("lib/perf"))?,
-        "200"
-    );
-    let lib_head = isolated_git_env(Command::new("git").args(["symbolic-ref", "--short", "HEAD"]))
-        .current_dir(&lib_dir)
-        .output()?;
-    assert_eq!(String::from_utf8_lossy(&lib_head.stdout).trim(), "work");
     Ok(())
 }
