@@ -669,6 +669,20 @@ fn print_culprit(commit: &CommitInfo, report: &Report) {
     comparison::print_report(report);
 }
 
+/// Whether checking out `tracked` would clobber the ignored `ignored` path:
+/// the same path, or one nested inside the other (a file where the other
+/// side needs a directory). `ls-files --directory` marks collapsed ignored
+/// directories with a trailing `/`.
+fn paths_collide(ignored: &str, tracked: &str) -> bool {
+    let ignored = ignored.trim_end_matches('/');
+    let nested = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    ignored == tracked || nested(ignored, tracked) || nested(tracked, ignored)
+}
+
 fn step_path(state_dir: &Path, commit: &str) -> PathBuf {
     state_dir.join(STEPS_DIR).join(format!("{commit}.json"))
 }
@@ -784,9 +798,16 @@ impl Repo {
 
     fn is_dirty(&self) -> Result<bool> {
         // Untracked files can't be clobbered by checkouts, and build output
-        // like `.rafn/` or `target/` is routinely left untracked.
+        // like `target/` is routinely left untracked. An explicit
+        // `--ignore-submodules` overrides `submodule.<name>.ignore = all`,
+        // which would otherwise hide edits the per-step reset then deletes.
         Ok(!self
-            .git(&["status", "--porcelain", "--untracked-files=no"])?
+            .git(&[
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+                "--ignore-submodules=untracked",
+            ])?
             .is_empty())
     }
 
@@ -851,11 +872,7 @@ impl Repo {
         );
         Ok(ignored
             .lines()
-            .filter(|path| match path.strip_suffix('/') {
-                // `--directory` collapses wholly-ignored directories.
-                Some(_) => tracked.iter().any(|t| t.starts_with(path)),
-                None => tracked.contains(*path),
-            })
+            .filter(|path| tracked.iter().any(|t| paths_collide(path, t)))
             .map(str::to_string)
             .collect())
     }
@@ -1089,6 +1106,20 @@ mod tests {
         assert_eq!(read_json::<Vec<i32>>(&path)?, [2]);
         assert!(!path.with_extension("json.tmp").exists());
         Ok(())
+    }
+
+    #[test]
+    fn paths_collide_on_equal_or_nested_paths_only() {
+        assert!(paths_collide("gen.txt", "gen.txt"));
+        assert!(paths_collide("out/", "out/data.bin"));
+        assert!(paths_collide("foo", "foo/bar"), "ignored file, tracked dir");
+        assert!(paths_collide("foo/", "foo"), "ignored dir, tracked file");
+        assert!(
+            paths_collide("foo/bar", "foo"),
+            "tracked file replaces parent dir"
+        );
+        assert!(!paths_collide("foo", "foobar"));
+        assert!(!paths_collide("out/", "output.txt"));
     }
 
     #[test]

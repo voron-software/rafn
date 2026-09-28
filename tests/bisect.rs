@@ -313,6 +313,50 @@ fn reset_leaves_a_manual_bisect_alone_despite_stale_session() -> Result<()> {
 }
 
 #[test]
+fn treats_edits_in_an_ignore_all_submodule_as_dirty() -> Result<()> {
+    let upstream = TempDir::new()?;
+    let upstream_git = |args: &[&str]| -> Result<()> {
+        let output = isolated_git_env(Command::new("git").args(args))
+            .current_dir(upstream.path())
+            .output()?;
+        ensure!(output.status.success(), "git {args:?} failed");
+        Ok(())
+    };
+    upstream_git(&["init", "--quiet", "--initial-branch=main"])?;
+    upstream_git(&["config", "user.name", "Test Author"])?;
+    upstream_git(&["config", "user.email", "author@example.com"])?;
+    std::fs::write(upstream.path().join("notes"), "original")?;
+    upstream_git(&["add", "notes"])?;
+    upstream_git(&["commit", "--quiet", "-m", "notes"])?;
+
+    let mut fixture = Fixture::new(&[Some(100)])?;
+    let upstream_path = upstream.path().to_string_lossy().to_string();
+    fixture.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        &upstream_path,
+        "lib",
+    ])?;
+    fixture.commit("add lib")?;
+    std::fs::write(fixture.path().join("perf"), "200")?;
+    fixture.commit("slow")?;
+    fixture.git(&["config", "submodule.lib.ignore", "all"])?;
+    std::fs::write(fixture.path().join("lib/notes"), "uncommitted edit")?;
+
+    let output = fixture.bisect(1, 2)?;
+
+    assert_eq!(output.status.code(), Some(2), "{}", describe(&output));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("lib/notes"))?,
+        "uncommitted edit"
+    );
+    Ok(())
+}
+
+#[test]
 fn refuses_to_start_over_an_interrupted_session() -> Result<()> {
     let fixture = Fixture::new(&[Some(100), Some(200)])?;
     fixture.write_session(None)?;
