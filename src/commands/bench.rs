@@ -6,7 +6,7 @@
 use anyhow::{Result, bail};
 use clap::Args;
 use std::path::PathBuf;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::config::{Config, EffectiveConfig, RepoConfig};
@@ -57,7 +57,7 @@ impl BenchCommand {
             framework_config.framework
         );
 
-        ensure_result_dir(&framework_config.results_strategy)?;
+        framework_config.results_strategy.ensure_dir()?;
 
         for command in &framework_config.commands {
             info!("Running: {}", command.display());
@@ -88,30 +88,14 @@ impl BenchCommand {
         let run_uuid = Uuid::new_v4().to_string();
         let run_started_at = timestamp_now();
 
-        let mut benchmark_sets = Vec::new();
-        for bench in &discovered {
-            let json = serde_json::to_string(&bench.data)?;
-            let format = ingest::detect_format(&json).unwrap_or_else(|_| "criterion".to_string());
-            let parser = ingest::get_parser(
-                &format,
-                repository.clone(),
-                commit.clone(),
-                branch.clone(),
-                run_uuid.clone(),
-                run_started_at,
-            );
-            match parser {
-                Ok(p) => match p.parse(&json) {
-                    Ok(mut parsed) => benchmark_sets.append(&mut parsed),
-                    Err(e) => {
-                        warn!("Failed to parse {}: {e}", bench.name);
-                    }
-                },
-                Err(e) => {
-                    warn!("No parser for {}: {e}", bench.name);
-                }
-            }
-        }
+        let benchmark_sets = ingest::parse_discovered(
+            &discovered,
+            &repository,
+            &commit,
+            branch.as_deref(),
+            &run_uuid,
+            run_started_at,
+        )?;
 
         if benchmark_sets.is_empty() {
             bail!("No benchmarks could be parsed from discovered result files");
@@ -152,19 +136,4 @@ impl BenchCommand {
 
         Ok(())
     }
-}
-
-fn ensure_result_dir(strategy: &framework::ResultsStrategy) -> Result<()> {
-    match strategy {
-        framework::ResultsStrategy::JsonFile(path) => {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-        framework::ResultsStrategy::JsonDirectory { dir, .. } => {
-            std::fs::create_dir_all(dir)?;
-        }
-        framework::ResultsStrategy::CriterionDirectory(_) => {}
-    }
-    Ok(())
 }
