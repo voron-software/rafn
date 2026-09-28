@@ -17,7 +17,7 @@ const BENCH_SCRIPT: &str = r#"#!/bin/sh
 for arg in "$@"; do
   case "$arg" in --benchmark_out=*) out="${arg#--benchmark_out=}" ;; esac
 done
-t=$(cat perf)
+if [ -f lib/perf ]; then t=$(cat lib/perf); else t=$(cat perf); fi
 cat > "$out" <<JSON
 {"context":{},"benchmarks":[{"name":"BM_Work","run_type":"iteration","iterations":1000,"real_time":$t,"cpu_time":$t,"time_unit":"ns"}]}
 JSON
@@ -75,6 +75,13 @@ impl Fixture {
             fixture.commits.push(fixture.git(&["rev-parse", "HEAD"])?);
         }
         Ok(fixture)
+    }
+
+    fn commit(&mut self, message: &str) -> Result<()> {
+        self.git(&["add", "--all"])?;
+        self.git(&["commit", "--quiet", "--allow-empty", "-m", message])?;
+        self.commits.push(self.git(&["rev-parse", "HEAD"])?);
+        Ok(())
     }
 
     fn path(&self) -> &Path {
@@ -255,5 +262,69 @@ fn reset_leaves_a_foreign_git_bisect_alone() -> Result<()> {
     assert_eq!(output.status.code(), Some(3), "{}", describe(&output));
     let bisect_start = fixture.git(&["rev-parse", "--git-path", "BISECT_START"])?;
     assert!(fixture.path().join(bisect_start).exists());
+    Ok(())
+}
+
+#[test]
+fn finds_regression_introduced_by_a_submodule_bump() -> Result<()> {
+    let upstream = TempDir::new()?;
+    let upstream_git = |args: &[&str]| -> Result<String> {
+        let output = isolated_git_env(Command::new("git").args(args))
+            .current_dir(upstream.path())
+            .output()?;
+        ensure!(output.status.success(), "git {args:?} failed");
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    upstream_git(&["init", "--quiet", "--initial-branch=main"])?;
+    upstream_git(&["config", "user.name", "Test Author"])?;
+    upstream_git(&["config", "user.email", "author@example.com"])?;
+    std::fs::write(upstream.path().join("perf"), "100")?;
+    upstream_git(&["add", "perf"])?;
+    upstream_git(&["commit", "--quiet", "-m", "fast"])?;
+    std::fs::write(upstream.path().join("perf"), "200")?;
+    upstream_git(&["commit", "--quiet", "-am", "slow"])?;
+    let slow = upstream_git(&["rev-parse", "HEAD"])?;
+    let fast = upstream_git(&["rev-parse", "HEAD~1"])?;
+
+    let mut fixture = Fixture::new(&[Some(100)])?;
+    let upstream_path = upstream.path().to_string_lossy().to_string();
+    fixture.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        &upstream_path,
+        "lib",
+    ])?;
+    let lib_dir = fixture.path().join("lib");
+    let lib_git = |args: &[&str]| -> Result<()> {
+        let output = isolated_git_env(Command::new("git").args(args))
+            .current_dir(&lib_dir)
+            .output()?;
+        ensure!(output.status.success(), "git {args:?} failed");
+        Ok(())
+    };
+    lib_git(&["checkout", "--quiet", &fast])?;
+    fixture.commit("add lib")?;
+    fixture.commit("unrelated")?;
+    lib_git(&["checkout", "--quiet", &slow])?;
+    fixture.commit("bump lib")?;
+    fixture.commit("unrelated again")?;
+
+    let output = fixture.bisect(1, 4)?;
+
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("First bad commit: {}", fixture.commits[3])),
+        "{}",
+        describe(&output)
+    );
+    fixture.assert_restored()?;
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("lib/perf"))?,
+        "200"
+    );
     Ok(())
 }

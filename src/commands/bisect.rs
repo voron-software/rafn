@@ -369,6 +369,10 @@ fn step(plan_path: &Path) -> StepVerdict {
         }
     };
 
+    if let Err(err) = repo.sync_submodules() {
+        warn!("Skipping {commit}: {err:#}");
+        return StepVerdict::Skip;
+    }
     let series = match measure(&plan.spec, &commit, &plan.repository) {
         Ok(series) => series,
         Err(err) => {
@@ -392,18 +396,23 @@ fn step(plan_path: &Path) -> StepVerdict {
     verdict
 }
 
-/// `None` when no baseline series was comparable at this commit, so there is
-/// no evidence either way.
+/// Any regressed series proves the commit bad, but calling it good needs
+/// every baseline series measured: a series missing here may be the one that
+/// already regressed, and a wrong "good" discards the half of history that
+/// holds the culprit. `None` means no conclusive evidence either way.
 fn step_verdict(report: &Report) -> Option<StepVerdict> {
-    let measured = report
+    if report.summary.has_regressions {
+        return Some(StepVerdict::Bad);
+    }
+    let all_measured = report
+        .comparisons
+        .iter()
+        .all(|c| matches!(c.outcome, Outcome::Compared { .. } | Outcome::Added { .. }));
+    let any_measured = report
         .comparisons
         .iter()
         .any(|c| matches!(c.outcome, Outcome::Compared { .. }));
-    measured.then_some(if report.summary.has_regressions {
-        StepVerdict::Bad
-    } else {
-        StepVerdict::Good
-    })
+    (all_measured && any_measured).then_some(StepVerdict::Good)
 }
 
 fn regressed_baseline(good: &[SeriesMean], report: &Report) -> Vec<SeriesMean> {
@@ -475,17 +484,24 @@ fn measure(
     Ok(average_runs(runs))
 }
 
-/// A single-file result left over from another commit would otherwise be
-/// read back as this commit's measurement if the benchmark exits 0 without
-/// rewriting it.
+/// Results left over from another commit would otherwise be read back as
+/// this commit's measurement, e.g. a benchmark removed or renamed at this
+/// commit whose old Criterion directory still exists.
 fn clear_stale_results(strategy: &ResultsStrategy) -> Result<()> {
-    if let ResultsStrategy::JsonFile(path) = strategy
-        && path.exists()
-    {
-        std::fs::remove_file(path)
-            .with_context(|| format!("Failed to remove stale results {}", path.display()))?;
+    let remove = |path: &Path| -> Result<()> {
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else if path.exists() {
+            std::fs::remove_file(path)
+        } else {
+            return Ok(());
+        };
+        removed.with_context(|| format!("Failed to remove stale results {}", path.display()))
+    };
+    match strategy {
+        ResultsStrategy::JsonFile(path) | ResultsStrategy::CriterionDirectory(path) => remove(path),
+        ResultsStrategy::JsonDirectory { dir, .. } => remove(dir),
     }
-    Ok(())
 }
 
 fn filter_series(series: Vec<SeriesMean>, filter: Option<&str>) -> Vec<SeriesMean> {
@@ -563,6 +579,7 @@ fn reset() -> Result<()> {
 fn cleanup(repo: &Repo, state_dir: &Path, original_head: &OriginalHead) -> Result<()> {
     if repo.bisect_in_progress()? {
         repo.git(&["bisect", "reset"])?;
+        repo.sync_submodules()?;
     } else {
         repo.restore(original_head)?;
     }
@@ -693,16 +710,25 @@ impl Repo {
     }
 
     fn checkout_detached(&self, commit: &str) -> Result<()> {
-        self.git(&["checkout", "--quiet", "--detach", commit])
-            .map(drop)
+        self.git(&["checkout", "--quiet", "--detach", commit])?;
+        self.sync_submodules()
     }
 
     fn restore(&self, head: &OriginalHead) -> Result<()> {
         match head {
             OriginalHead::Branch(branch) => self.git(&["checkout", "--quiet", branch]),
             OriginalHead::Detached(sha) => self.git(&["checkout", "--quiet", "--detach", sha]),
-        }
-        .map(drop)
+        }?;
+        self.sync_submodules()
+    }
+
+    /// Checkouts (ours and `git bisect`'s) move only the superproject's
+    /// gitlinks; without this a regression from a submodule bump measures
+    /// identically on both sides. Deliberately no `--init`: submodules the
+    /// user never initialized stay untouched.
+    fn sync_submodules(&self) -> Result<()> {
+        self.git(&["submodule", "update", "--recursive", "--quiet"])
+            .map(drop)
     }
 
     fn describe(&self, commit: &str) -> Result<CommitInfo> {
@@ -822,6 +848,54 @@ mod tests {
         let report = comparison::compare(&baseline, &[series("other", "ns", 1.0)], 5.0);
 
         assert_eq!(step_verdict(&report), None);
+    }
+
+    #[test]
+    fn step_verdict_is_none_when_a_baseline_series_is_missing_and_rest_unchanged() {
+        let baseline = vec![series("a", "ns", 100.0), series("b", "ns", 100.0)];
+        let report = comparison::compare(&baseline, &[series("a", "ns", 100.0)], 5.0);
+
+        assert_eq!(step_verdict(&report), None);
+    }
+
+    #[test]
+    fn step_verdict_is_bad_when_any_measured_series_regressed() {
+        let baseline = vec![series("a", "ns", 100.0), series("b", "ns", 100.0)];
+        let report = comparison::compare(&baseline, &[series("a", "ns", 200.0)], 5.0);
+
+        assert_eq!(step_verdict(&report), Some(StepVerdict::Bad));
+    }
+
+    #[test]
+    fn step_verdict_ignores_series_absent_from_baseline() {
+        let baseline = vec![series("a", "ns", 100.0)];
+        let report = comparison::compare(
+            &baseline,
+            &[series("a", "ns", 100.0), series("new", "ns", 1.0)],
+            5.0,
+        );
+
+        assert_eq!(step_verdict(&report), Some(StepVerdict::Good));
+    }
+
+    #[test]
+    fn clear_stale_results_removes_result_directories_and_files() -> Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let criterion = tmp.path().join("target/criterion");
+        std::fs::create_dir_all(criterion.join("old_bench/new"))?;
+        let json = tmp.path().join("out.json");
+        std::fs::write(&json, "{}")?;
+
+        clear_stale_results(&ResultsStrategy::CriterionDirectory(criterion.clone()))?;
+        clear_stale_results(&ResultsStrategy::JsonFile(json.clone()))?;
+        clear_stale_results(&ResultsStrategy::JsonDirectory {
+            dir: tmp.path().join("missing"),
+            required_suffix: None,
+        })?;
+
+        assert!(!criterion.exists());
+        assert!(!json.exists());
+        Ok(())
     }
 
     #[test]
