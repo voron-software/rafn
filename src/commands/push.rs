@@ -37,7 +37,14 @@ impl PushCommand {
         }
 
         let local_store = store::local_backend(&repo_config);
-        let remote = store::remote_backend_for_push(repo_config);
+        // Built up front so a missing API key or bad API URL fails before any
+        // work is done, but skipped on --dry-run, which never contacts the
+        // service and so should not demand credentials.
+        let remote = if self.dry_run {
+            None
+        } else {
+            Some(store::remote_backend_for_push(repo_config)?)
+        };
 
         // Collect the commits to push.
         let commits: Vec<String> = if self.all {
@@ -64,12 +71,13 @@ impl PushCommand {
         if self.dry_run {
             info!("Dry run — snapshots will not be submitted.");
         }
-        info!("Pushing to {}", remote.endpoint());
 
-        let mut client = if self.dry_run {
-            None
-        } else {
-            Some(remote.connect_push().await?)
+        let mut client = match &remote {
+            Some(remote) => {
+                info!("Pushing to {}", remote.endpoint());
+                Some(remote.connect_push().await?)
+            }
+            None => None,
         };
 
         let mut total_submitted = 0u32;

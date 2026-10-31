@@ -4,7 +4,7 @@
 //! (`RAFN_CLOUD__API_URL` etc.), with compiled defaults as the final
 //! fallback. `api_key` is intentionally not a field here: it is always
 //! sourced from the `RAFN_API_KEY` environment variable, never persisted to
-//! this file.
+//! this file (see [`ApiKey`](super::ApiKey)).
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -175,6 +175,30 @@ mod tests {
 
         let config = Config::load_from(&path)?;
         assert_eq!(config.cloud.api_url, "https://file.example.com");
+        Ok(())
+    }
+
+    #[test]
+    fn test_api_key_env_var_is_never_loaded_into_the_config() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config.toml");
+
+        // `RAFN_API_KEY` matches the `RAFN_` prefix this loader scans, so
+        // pin that it is ignored rather than becoming a field that `save`
+        // would then write to disk.
+        let mut env = config::Map::new();
+        env.insert(
+            "RAFN_API_KEY".to_string(),
+            "rk_live_supersecret".to_string(),
+        );
+        let env_source = config::Environment::with_prefix("RAFN")
+            .prefix_separator("_")
+            .separator("__")
+            .source(Some(env));
+
+        let config = Config::load_from_with_env(&path, env_source)?;
+        assert_eq!(config, Config::default());
+        assert!(!toml::to_string_pretty(&config)?.contains("supersecret"));
         Ok(())
     }
 

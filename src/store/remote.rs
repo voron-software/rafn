@@ -1,56 +1,111 @@
 //! Remote benchmark store backed entirely by gRPC.
+//!
+//! Every RPC goes through `channel::connect`, which owns TLS and the
+//! interceptor that authenticates the call, and every failed RPC is mapped
+//! through `auth::RpcError`. Nothing in this module builds a channel or
+//! interprets a `Status` on its own.
 
 use anyhow::{Context, Result};
-use tonic::transport::Channel;
+use tonic::Status;
 
 use crate::comparison;
-use crate::config::{EffectiveConfig, RepositoryRef};
+use crate::config::{ApiKey, ApiKeyError, EffectiveConfig, RepositoryRef};
 use crate::proto::benchmark::timestamp_to_millis;
 use crate::proto::pb::{
     BenchmarkComparison, BenchmarkSet, CompareCommitsRequest, CompareCommitsResponse,
     ComparisonSummary, GetBenchmarkTrendRequest, GetCommitBenchmarksRequest,
     GetRepositoryTrendsRequest, PushResultsRequest, RepositoryReference, SeriesKey, Verdict,
-    benchmark_comparison, benchmark_service_client::BenchmarkServiceClient,
+    benchmark_comparison,
 };
 
 use super::{Backend, TrendDataPoint, TrendQuery, require_repository};
+use auth::RpcError;
+use channel::{Client, ServiceUrl};
+
+mod auth;
+mod channel;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Debug)]
 pub struct RemoteBackend {
-    endpoint: String,
+    url: ServiceUrl,
+    key: ApiKey,
     repository: Option<RepositoryRef>,
 }
 
 impl RemoteBackend {
     /// Build a backend for read operations (trend/compare), which require a
-    /// resolved repository identity.
+    /// resolved repository identity and an API key from `RAFN_API_KEY`.
     pub fn from_effective(effective: EffectiveConfig) -> Result<Self> {
-        let repository = require_repository(&effective)?;
-        Ok(Self {
-            endpoint: effective.endpoint,
-            repository: Some(repository),
-        })
+        Self::from_effective_with_key(effective, ApiKey::from_env())
     }
 
     /// Build a backend for `rafn push`, which reads repository identity from
     /// each snapshot's `SourceInformation` rather than from config.
-    pub fn for_push(effective: EffectiveConfig) -> Self {
-        Self {
-            endpoint: effective.endpoint,
-            repository: None,
-        }
+    pub fn for_push(effective: EffectiveConfig) -> Result<Self> {
+        Self::for_push_with_key(effective, ApiKey::from_env())
+    }
+
+    // The `_with_key` variants take the already-resolved key so tests can
+    // cover the missing/invalid cases without mutating the process
+    // environment. Construction is synchronous and never touches the network,
+    // which is what guarantees credential and URL problems surface before any
+    // connection attempt.
+    fn from_effective_with_key(
+        effective: EffectiveConfig,
+        key: Result<ApiKey, ApiKeyError>,
+    ) -> Result<Self> {
+        let repository = require_repository(&effective)?;
+        Self::new(&effective.endpoint, key, Some(repository))
+    }
+
+    fn for_push_with_key(
+        effective: EffectiveConfig,
+        key: Result<ApiKey, ApiKeyError>,
+    ) -> Result<Self> {
+        Self::new(&effective.endpoint, key, None)
+    }
+
+    fn new(
+        endpoint: &str,
+        key: Result<ApiKey, ApiKeyError>,
+        repository: Option<RepositoryRef>,
+    ) -> Result<Self> {
+        // Key first: it is the failure a fresh install or a fork PR hits, and
+        // its message says how to fix it.
+        let key = key?;
+        let url = ServiceUrl::parse(endpoint)?;
+        Ok(Self {
+            url,
+            key,
+            repository,
+        })
     }
 
     pub fn repository(&self) -> Option<&RepositoryRef> {
         self.repository.as_ref()
     }
 
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
+    pub fn endpoint(&self) -> String {
+        self.url.to_string()
     }
 
     pub async fn connect_push(&self) -> Result<BenchmarkClient> {
-        BenchmarkClient::connect(self.endpoint.clone()).await
+        Ok(BenchmarkClient {
+            inner: self.connect().await?,
+            url: self.url.clone(),
+        })
+    }
+
+    async fn connect(&self) -> Result<Client> {
+        channel::connect(&self.url, &self.key).await
+    }
+
+    /// Adapter for `map_err` on an RPC result, naming the call for the error.
+    fn rpc_error(&self, rpc: &'static str) -> impl FnOnce(Status) -> RpcError + '_ {
+        move |status| RpcError::from_status(status, rpc, &self.url)
     }
 }
 
@@ -60,9 +115,7 @@ fn repository_ref(repository: Option<&RepositoryRef>) -> Option<RepositoryRefere
 
 impl Backend for RemoteBackend {
     async fn benchmarks_for_commit(&self, commit_sha: &str) -> Result<Vec<BenchmarkSet>> {
-        let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
-            .await
-            .with_context(|| format!("Failed to connect to gRPC service at {}", self.endpoint))?;
+        let mut client = self.connect().await?;
 
         let response = client
             .get_commit_benchmarks(GetCommitBenchmarksRequest {
@@ -72,20 +125,13 @@ impl Backend for RemoteBackend {
                 benchmark_name: None,
             })
             .await
-            .with_context(|| {
-                format!(
-                    "gRPC get_commit_benchmarks call to {} failed",
-                    self.endpoint
-                )
-            })?;
+            .map_err(self.rpc_error("get_commit_benchmarks"))?;
 
         Ok(response.into_inner().benchmark_sets)
     }
 
     async fn trend(&self, query: TrendQuery) -> Result<Vec<TrendDataPoint>> {
-        let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
-            .await
-            .with_context(|| format!("Failed to connect to gRPC service at {}", self.endpoint))?;
+        let mut client = self.connect().await?;
 
         let mut data_points: Vec<TrendDataPoint> = if let Some(name) = query.benchmark_name {
             let response = client
@@ -100,9 +146,7 @@ impl Backend for RemoteBackend {
                     branch: None,
                 })
                 .await
-                .with_context(|| {
-                    format!("gRPC get_benchmark_trend call to {} failed", self.endpoint)
-                })?;
+                .map_err(self.rpc_error("get_benchmark_trend"))?;
 
             response
                 .into_inner()
@@ -130,12 +174,7 @@ impl Backend for RemoteBackend {
                     limit: Some(query.limit),
                 })
                 .await
-                .with_context(|| {
-                    format!(
-                        "gRPC get_repository_trends call to {} failed",
-                        self.endpoint
-                    )
-                })?;
+                .map_err(self.rpc_error("get_repository_trends"))?;
 
             response
                 .into_inner()
@@ -164,9 +203,7 @@ impl Backend for RemoteBackend {
         head: &str,
         threshold_pct: f64,
     ) -> Result<comparison::Report> {
-        let mut client = BenchmarkServiceClient::connect(self.endpoint.clone())
-            .await
-            .with_context(|| format!("Failed to connect to gRPC service at {}", self.endpoint))?;
+        let mut client = self.connect().await?;
 
         let response = client
             .compare_commits(CompareCommitsRequest {
@@ -176,7 +213,7 @@ impl Backend for RemoteBackend {
                 regression_threshold_pct: Some(threshold_pct),
             })
             .await
-            .with_context(|| format!("gRPC compare_commits call to {} failed", self.endpoint))?;
+            .map_err(self.rpc_error("compare_commits"))?;
 
         report_from_proto(response.into_inner())
     }
@@ -277,52 +314,18 @@ fn summary_from_proto(summary: ComparisonSummary) -> comparison::Summary {
 
 #[derive(Debug)]
 pub struct BenchmarkClient {
-    inner: BenchmarkServiceClient<Channel>,
+    inner: Client,
+    url: ServiceUrl,
 }
 
 impl BenchmarkClient {
-    pub async fn connect(endpoint: String) -> Result<Self> {
-        let inner = BenchmarkServiceClient::connect(endpoint)
-            .await
-            .context("Failed to connect to gRPC service")?;
-        Ok(Self { inner })
-    }
-
     pub async fn submit(&mut self, benchmark_sets: Vec<BenchmarkSet>) -> Result<u32> {
         let response = self
             .inner
             .push_results(PushResultsRequest { benchmark_sets })
             .await
-            .context("gRPC push_results call failed")?;
+            .map_err(|status| RpcError::from_status(status, "push_results", &self.url))?;
 
         Ok(response.into_inner().benchmarks_pushed)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tonic::Status;
-
-    fn wrapped_status_error() -> anyhow::Error {
-        let status = Status::internal("ClickHouse: table default.benchmarks does not exist");
-        anyhow::Error::new(status).context("gRPC push_results call failed")
-    }
-
-    #[test]
-    fn test_status_context_hides_detail_under_default_display() {
-        let short = format!("{}", wrapped_status_error());
-        assert_eq!(short, "gRPC push_results call failed");
-        assert!(
-            !short.contains("ClickHouse"),
-            "default Display should not leak the wrapped status: {short}"
-        );
-    }
-
-    #[test]
-    fn test_status_context_reveals_code_and_message_under_alternate_display() {
-        let full = format!("{:#}", wrapped_status_error());
-        assert!(full.contains("gRPC push_results call failed"));
-        assert!(full.contains("Internal"));
-        assert!(full.contains("ClickHouse: table default.benchmarks does not exist"));
     }
 }
