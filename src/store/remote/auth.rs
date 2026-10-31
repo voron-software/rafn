@@ -54,6 +54,14 @@ impl Interceptor for AuthInterceptor {
     }
 }
 
+/// Start of the message tonic gives a status it made up from the HTTP status
+/// code of a response that carried no `grpc-status` (tonic `infer_grpc_status`).
+/// A real rafn answer always has one, so this marks a refusal by something in
+/// front of rafn (a proxy, a WAF, an IAM-gated Cloud Run front end) that never
+/// looked at the key. `bare_http_refusals_are_not_blamed_on_the_key_or_the_subscription`
+/// fails if a tonic upgrade rewords it.
+const TONIC_INFERRED_STATUS_PREFIX: &str = "grpc-status header missing";
+
 /// A failed RPC, with credential and entitlement refusals singled out because
 /// the user can fix them and a generic "call failed" would hide that.
 #[derive(Debug, Error)]
@@ -98,9 +106,15 @@ impl RpcError {
             message => message.to_string(),
         };
 
+        // Only a status the rafn backend itself sent says anything about the
+        // key or the organization. An inferred one stays `Failed`, whose chain
+        // shows the HTTP code, rather than send the user to rotate a key or
+        // check billing over a refusal that never reached rafn.
+        let from_service = !status.message().starts_with(TONIC_INFERRED_STATUS_PREFIX);
+
         match status.code() {
-            Code::Unauthenticated => Self::Unauthenticated { endpoint, message },
-            Code::PermissionDenied => Self::PermissionDenied { endpoint, message },
+            Code::Unauthenticated if from_service => Self::Unauthenticated { endpoint, message },
+            Code::PermissionDenied if from_service => Self::PermissionDenied { endpoint, message },
             _ => Self::Failed {
                 rpc,
                 endpoint,
@@ -227,6 +241,22 @@ mod tests {
         assert!(message.contains("not entitled"), "{message}");
         // Distinct from a credential problem: the key itself is fine.
         assert!(!message.contains("rejected the API key"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn statuses_tonic_inferred_from_http_codes_stay_generic() -> Result<()> {
+        for code in [Code::Unauthenticated, Code::PermissionDenied] {
+            let status = Status::new(
+                code,
+                "grpc-status header missing, mapped from HTTP status code 403",
+            );
+            let error = RpcError::from_status(status, "push_results", &url()?);
+            assert!(
+                matches!(error, RpcError::Failed { .. }),
+                "{code:?}: {error:?}"
+            );
+        }
         Ok(())
     }
 

@@ -39,21 +39,21 @@ export RAFN_API_KEY=<your key>
 rafn push
 ```
 
-The key is read only from the environment, never from `rafn.toml` or `~/.config/rafn/config.toml`, so it cannot be committed by accident. It is sent as a bearer token with every request, so the API URL must be `https://`; plain `http://` is accepted for local development servers only. `rafn bench` and `rafn bisect` run entirely locally, and with `[backend] type = "local"` nothing needs a key. `rafn push --dry-run` does not need one either, because it never contacts the service.
+The key is read only from the environment, never from `rafn.toml` or `~/.config/rafn/config.toml`, so it cannot be committed by accident. It is sent as a bearer token with every request, so the API URL must be `https://`. Plain `http://` is accepted only for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) such as a local development server; rafn refuses any other `http://` URL rather than send the key unencrypted. `rafn bench` and `rafn bisect` run entirely locally, and with `[backend] type = "local"` nothing needs a key. `rafn push --dry-run` does not need one either, because it never contacts the service.
 
-If the service rejects the key, rafn says so. If the key is valid but the service refuses the request (for example because the subscription is inactive or the quota is used up), rafn prints the reason the service gave.
+If the service rejects the key, rafn says so. If the key is valid but the service refuses the request (for example because the subscription is inactive or the quota is used up), rafn prints the reason the service gave. If something in front of the service (a proxy, a firewall, an access policy) refuses the request before it reaches rafn, the error shows the HTTP status instead, and says nothing about the key or the subscription.
 
-In GitHub Actions, store the key as a secret and pass it with the `api-key` input, which sets `RAFN_API_KEY` for the command:
+In GitHub Actions, store the key as a secret and pass it with the `api-key` input (available from v0.1.7; earlier versions ignore it), which sets `RAFN_API_KEY` for the command:
 
 ```yaml
 steps:
-  - uses: voron-software/rafn@v0.1.0
+  - uses: voron-software/rafn@v0.1.7
     with:
       command: push
       api-key: ${{ secrets.RAFN_API_KEY }}
 ```
 
-Repository secrets are not available to workflows triggered by pull requests from forks, so `push`, `trend` and `compare` fail there with a message that the key is missing or empty.
+Repository secrets are not available to workflows triggered by pull requests from forks, so `push`, `trend` and `compare` fail there with a message that the key is not set.
 
 ## Bisecting regressions
 

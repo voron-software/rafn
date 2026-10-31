@@ -142,10 +142,10 @@ mod tests {
     #[test]
     fn test_get_set() -> Result<()> {
         let mut config = Config::default();
-        config.set("cloud.api_url", "http://grpc.example.com:50051")?;
+        config.set("cloud.api_url", "https://grpc.example.com:50051")?;
         assert_eq!(
             config.get("cloud.api_url").context("expected value")?,
-            "http://grpc.example.com:50051"
+            "https://grpc.example.com:50051"
         );
         Ok(())
     }

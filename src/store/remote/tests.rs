@@ -12,6 +12,7 @@ use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tonic::body::Body;
@@ -40,11 +41,23 @@ struct Seen {
     client_version: Option<String>,
 }
 
-/// Answers every RPC with an empty success, or with `failure` if set.
+/// How the mock answers every RPC. One enum rather than independent options so
+/// a mock cannot be asked for two contradictory behaviours at once.
+#[derive(Clone)]
+enum Reply {
+    /// An empty success.
+    Success,
+    /// A gRPC failure carrying `grpc-status`, as the rafn backend sends.
+    Failure(Status),
+    /// A bare HTTP error with no `grpc-status` at all, as a proxy, WAF or
+    /// IAM-gated Cloud Run front end sends before the request reaches rafn.
+    BareHttp(http::StatusCode),
+}
+
 #[derive(Clone)]
 struct MockService {
     seen: Arc<Mutex<Vec<Seen>>>,
-    failure: Option<Status>,
+    reply: Reply,
 }
 
 impl NamedService for MockService {
@@ -79,9 +92,10 @@ impl<Req, Resp: Clone> UnaryService<Req> for Handler<Resp> {
             });
         }
 
-        std::future::ready(match &self.service.failure {
-            Some(status) => Err(status.clone()),
-            None => Ok(Response::new(self.response.clone())),
+        std::future::ready(match &self.service.reply {
+            Reply::Failure(status) => Err(status.clone()),
+            // `route` answers these before a handler exists.
+            Reply::Success | Reply::BareHttp(_) => Ok(Response::new(self.response.clone())),
         })
     }
 }
@@ -108,6 +122,16 @@ impl MockService {
     }
 
     async fn route(self, request: http::Request<Body>) -> http::Response<Body> {
+        if let Reply::BareHttp(code) = self.reply {
+            let mut response = http::Response::new(Body::empty());
+            *response.status_mut() = code;
+            response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/html"),
+            );
+            return response;
+        }
+
         let method = request
             .uri()
             .path()
@@ -187,6 +211,14 @@ struct MockServer {
 
 impl MockServer {
     fn start(failure: Option<Status>) -> Result<Self> {
+        Self::start_with(failure.map_or(Reply::Success, Reply::Failure))
+    }
+
+    fn start_bare_http(code: http::StatusCode) -> Result<Self> {
+        Self::start_with(Reply::BareHttp(code))
+    }
+
+    fn start_with(reply: Reply) -> Result<Self> {
         // Port 0 plus `local_addr` rather than a fixed port, so parallel tests
         // and CI runners never collide.
         let incoming = TcpIncoming::bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
@@ -194,7 +226,7 @@ impl MockServer {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let service = MockService {
             seen: Arc::clone(&seen),
-            failure,
+            reply,
         };
 
         let task = tokio::spawn(async move {
@@ -465,9 +497,97 @@ fn unsupported_schemes_are_rejected_when_the_backend_is_built() -> Result<()> {
 }
 
 #[tokio::test]
+async fn bare_http_refusals_are_not_blamed_on_the_key_or_the_subscription() -> Result<()> {
+    // tonic maps a response without `grpc-status` to a status from the HTTP
+    // code alone (403 becomes PERMISSION_DENIED, 401 UNAUTHENTICATED). That
+    // came from something in front of rafn, which never looked at the key, so
+    // telling the user their key was accepted or rejected would be false.
+    for (code, tonic_code) in [
+        (http::StatusCode::FORBIDDEN, tonic::Code::PermissionDenied),
+        (http::StatusCode::UNAUTHORIZED, tonic::Code::Unauthenticated),
+    ] {
+        let server = MockServer::start_bare_http(code)?;
+
+        for (name, result) in call_every_rpc(&server.url()).await? {
+            let error = result
+                .err()
+                .with_context(|| format!("{name} should fail"))?;
+            // Guards the premise: if tonic stops inferring these codes, the
+            // assertions below would pass without testing anything.
+            let RpcError::Failed { status, .. } = rpc_error(&error)? else {
+                anyhow::bail!("{code} on {name} should be a generic failure: {error:#}");
+            };
+            assert_eq!(status.code(), tonic_code, "{code} on {name}");
+
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(&format!("HTTP status code {}", code.as_u16())),
+                "{name}: {message}"
+            );
+            assert!(!message.contains("API key"), "{name}: {message}");
+            assert!(!message.contains("RAFN_API_KEY"), "{name}: {message}");
+            assert!(!message.contains("entitled"), "{name}: {message}");
+        }
+        assert!(
+            server.seen()?.is_empty(),
+            "a bare HTTP refusal never reaches a handler"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn https_opens_with_a_tls_handshake() -> Result<()> {
+    // The listener is a raw socket, not a TLS server: all that matters is the
+    // first bytes the client puts on the wire. A TLS record starts with
+    // content type 0x16 (handshake) and legacy version 0x03xx. Without this,
+    // a TLS branch that were dropped or inverted would still produce an error
+    // here (tonic refuses `https` without TLS configured) and the suite would
+    // stay green while every real `https://` call failed.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("https://{}", listener.local_addr()?);
+
+    let capture = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut head = [0u8; 2];
+        // `read`, not `read_exact`: a client that sent nothing should fail
+        // the assertion below with its own error, not with "early eof".
+        let len = socket.read(&mut head).await?;
+        anyhow::Ok(head[..len].to_vec())
+    });
+
+    // Dropping the accepted socket after the first read ends the client's
+    // handshake, so this resolves to an error rather than hanging.
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        reader(&endpoint)?.benchmarks_for_commit("abc"),
+    )
+    .await
+    .context("client hung after the server closed the connection")?;
+    let client_error = result
+        .err()
+        .map_or_else(|| "none".to_string(), |e| format!("{e:#}"));
+
+    let head = tokio::time::timeout(Duration::from_secs(5), capture)
+        .await
+        .with_context(|| {
+            // Typically no native root certificates: the TLS config fails
+            // before any connection is opened.
+            format!("the client never sent anything; its error: {client_error}")
+        })???;
+    assert_eq!(
+        head.get(..2),
+        Some(&[0x16, 0x03][..]),
+        "first bytes were not a TLS handshake record: {head:02x?}; client error: {client_error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn https_never_falls_back_to_plaintext() -> Result<()> {
     // A plaintext server cannot complete a TLS handshake, so an `https://`
-    // connection to it must fail, and the key must never reach it.
+    // connection to it must fail, and the key must never reach it. That `https`
+    // really speaks TLS is pinned by `https_opens_with_a_tls_handshake`.
     let server = MockServer::start(None)?;
     let endpoint = server.url().replacen("http", "https", 1);
 

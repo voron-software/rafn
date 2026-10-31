@@ -25,13 +25,18 @@ pub enum ApiKeyError {
     #[error(
         "RAFN_API_KEY is not set. The cloud backend needs an API key: \
          export RAFN_API_KEY=<your key> (in GitHub Actions, pass a secret via the \
-         `api-key` input). To use rafn without the cloud, set `type = \"local\"` \
+         `api-key` input; secrets are not available to pull requests from \
+         forks). To use rafn without the cloud, set `type = \"local\"` \
          under [backend] in rafn.toml."
     )]
     Missing,
 
-    // An unset GitHub secret expands to an empty string rather than to
-    // nothing, so this is the failure mode CI users actually hit.
+    // An unavailable GitHub secret expands to an empty string rather than to
+    // nothing, so this is what a workflow gets when it wires the secret into
+    // `env:` itself. The action's `api-key` input does not reach it: the
+    // action cannot tell an omitted input from an empty secret, so it leaves
+    // the variable unset on empty and the user sees `Missing`, whose message
+    // therefore also covers fork PRs.
     #[error(
         "RAFN_API_KEY is set but empty. In GitHub Actions this usually means \
          the secret is not available to this run (for example on pull requests \
@@ -168,6 +173,12 @@ mod tests {
         assert!(message.contains("RAFN_API_KEY"), "{message}");
         assert!(message.contains("`api-key`"), "{message}");
         assert!(message.contains("type = \"local\""), "{message}");
+    }
+
+    #[test]
+    fn missing_key_message_explains_fork_prs_because_the_action_cannot_report_empty() {
+        let message = ApiKeyError::Missing.to_string();
+        assert!(message.contains("forks"), "{message}");
     }
 
     #[test]

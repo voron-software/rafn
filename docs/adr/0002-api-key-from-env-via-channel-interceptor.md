@@ -29,10 +29,21 @@ is the problem.
   repeats the server's reason verbatim, because only the server knows whether
   that is an inactive subscription or a used-up quota. Every other status stays
   a generic "call failed" whose status detail shows under `{:#}` only.
+- A status tonic made up from a bare HTTP code (a response with no
+  `grpc-status`, recognised by tonic's "grpc-status header missing" message
+  prefix) is never mapped to either of those errors. A proxy, a WAF or an
+  IAM-gated Cloud Run front end answering 401/403 never looked at the key, so
+  "key rejected" or "key accepted, check billing" would send the user the wrong
+  way. These stay generic failures whose chain shows the HTTP status. The prefix
+  is tonic's, not ours: a test against a mock that returns a bare 403/401 fails
+  if an upgrade rewords it.
 - `rafn push --dry-run` never builds the remote backend, so it needs no key.
 - The GitHub Action's `api-key` input is exported as `RAFN_API_KEY` only when
   non-empty, so a key set at job or workflow level is not clobbered by the
-  input's empty default.
+  input's empty default. For the same reason an empty input is not exported as
+  an empty variable to get the "set but empty" error: an omitted input and a
+  secret withheld from a fork PR look identical to the action, so the CLI's
+  "not set" message names fork PRs instead.
 
 ## Consequences
 
