@@ -95,10 +95,15 @@ ignore = [
 # MPL-2.0 is `colored`'s license specifically (a direct dependency, not
 # transitive noise): weak/file-level copyleft, standard to consume as a
 # library dependency without triggering its copyleft obligations.
+#
+# ISC is the TLS stack's license (ring, rustls-webpki, untrusted), pulled in
+# by tonic's `tls-ring` feature for https:// endpoints; it is a permissive
+# MIT-equivalent.
 allow = [
     "MIT",
     "Apache-2.0",
     "BSD-3-Clause",
+    "ISC",
     "Unicode-3.0",
     "MPL-2.0",
 ]

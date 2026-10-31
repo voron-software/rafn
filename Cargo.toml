@@ -48,7 +48,16 @@ toml = "1.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 
 # gRPC
-tonic = { version = "0.14" }
+#
+# The cloud API is served over https, so the client needs TLS:
+# - `tls-ring` selects rustls' ring crypto provider. ring builds with just a C
+#   compiler, whereas aws-lc-rs can need cmake or NASM depending on the target,
+#   which would complicate the cross-compiled release targets (aarch64 Linux,
+#   Windows MSVC; see release.yml).
+# - `tls-native-roots` trusts the OS certificate store instead of a bundled
+#   Mozilla list, so corporate TLS-inspecting proxies whose CA is installed on
+#   developer machines and CI runners keep working (see store/remote/channel.rs).
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
 prost = { version = "0.14" }
 tonic-prost = "0.14"
 prost-types = "0.14"

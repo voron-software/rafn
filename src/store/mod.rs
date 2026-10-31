@@ -122,7 +122,9 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
         .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
-pub fn remote_backend_for_push(repo_config: RepoConfig) -> RemoteBackend {
+/// Remote backend for `rafn push`. Fails before any connection when
+/// `RAFN_API_KEY` is missing or the API URL is unusable.
+pub fn remote_backend_for_push(repo_config: RepoConfig) -> Result<RemoteBackend> {
     let user_config = Config::load().unwrap_or_default();
     let effective = EffectiveConfig::resolve(&repo_config, &user_config);
     RemoteBackend::for_push(effective)

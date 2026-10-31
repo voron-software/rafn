@@ -29,7 +29,8 @@ pub enum BackendType {
 /// `[backend.cloud]` section — rafn cloud service endpoint.
 ///
 /// `api_key` is intentionally not a field here: it is always sourced from the
-/// `RAFN_API_KEY` environment variable, never from `rafn.toml`.
+/// `RAFN_API_KEY` environment variable, never from `rafn.toml` (see
+/// [`ApiKey`](super::ApiKey)).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CloudConfig {
     /// Base URL of the rafn cloud API.
@@ -208,6 +209,26 @@ mod tests {
         let cfg = RepoConfig::default();
         assert_eq!(cfg.backend.backend_type, BackendType::Cloud);
         assert!(cfg.cloud_api_url().is_none());
+    }
+
+    #[test]
+    fn test_api_key_env_var_is_never_loaded_into_the_config() -> Result<()> {
+        // `RAFN_API_KEY` matches the `RAFN_` prefix this loader scans, so pin
+        // that it is ignored rather than becoming repo config that could be
+        // serialized back into a committed `rafn.toml`.
+        let mut env = config::Map::new();
+        env.insert(
+            "RAFN_API_KEY".to_string(),
+            "rk_live_supersecret".to_string(),
+        );
+        let env_source = config::Environment::with_prefix("RAFN")
+            .prefix_separator("_")
+            .separator("__")
+            .source(Some(env));
+
+        let cfg = RepoConfig::build_with_env(None, env_source)?;
+        assert!(!toml::to_string_pretty(&cfg)?.contains("supersecret"));
+        Ok(())
     }
 
     #[test]
