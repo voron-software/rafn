@@ -18,6 +18,13 @@ inputs:
     description: Directory to run the rafn command in, such as a benchmark project within a monorepo.
     required: false
     default: ''
+  api-key:
+    description: >-
+      rafn API key, passed to the command as RAFN_API_KEY. Required by push,
+      trend, and compare when the backend is cloud. Pass it from a repository or
+      organization secret, never as a literal.
+    required: false
+    default: ''
 
 outputs:
   path:
@@ -44,8 +51,15 @@ runs:
         RAFN_PATH: ${{ steps.resolve.outputs.path }}
         INPUT_COMMAND: ${{ inputs.command }}
         INPUT_ARGS: ${{ inputs.args }}
+        INPUT_API_KEY: ${{ inputs.api-key }}
       run: |
         set -euo pipefail
+        # Exported only when provided: setting RAFN_API_KEY in the step's env
+        # unconditionally would overwrite a key the workflow already set at job
+        # level with this input's empty default.
+        if [[ -n "${INPUT_API_KEY}" ]]; then
+          export RAFN_API_KEY="${INPUT_API_KEY}"
+        fi
         set -f
         # shellcheck disable=SC2206
         args=(${INPUT_ARGS})
