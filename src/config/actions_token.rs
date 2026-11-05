@@ -10,12 +10,12 @@
 use std::fmt;
 use std::time::Duration;
 
-use hyper::header::HeaderValue;
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
+use reqwest::redirect;
 use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use super::http_get::{self, GetError};
 use super::loopback::is_loopback;
 
 /// Set to `true` by the runner in every GitHub Actions job.
@@ -31,6 +31,10 @@ const AUDIENCE: &str = "rafn";
 /// The CLI is short-lived and waits on this before doing its work, so a
 /// stalled endpoint must fail fast and say what it was waiting for.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound on the response body. A token response is a few kilobytes; the
+/// cap only stops a misbehaving endpoint from filling memory.
+const MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Why the token could not be obtained. Messages never include the request
 /// token, the JWT, or any part of the response body: a mis-shaped response is
@@ -49,11 +53,20 @@ pub enum ActionsTokenError {
     )]
     InvalidRequestToken,
 
+    #[error("could not set up the HTTP client for the GitHub Actions OIDC token request")]
+    Client {
+        #[source]
+        source: reqwest::Error,
+    },
+
+    /// The cause is kept in the error chain without the request URL, which
+    /// reqwest would otherwise print: it carries job identifiers that have no
+    /// business in a build log. The message names only the host.
     #[error("could not request a GitHub Actions OIDC token from {host}")]
     Request {
         host: String,
         #[source]
-        source: GetError,
+        source: reqwest::Error,
     },
 
     #[error(
@@ -74,6 +87,9 @@ pub enum ActionsTokenError {
          a string \"value\" field ({reason})"
     )]
     BadResponse { host: String, reason: &'static str },
+
+    #[error("the GitHub Actions OIDC token response from {host} is larger than 64 KiB")]
+    BodyTooLarge { host: String },
 
     #[error(
         "the GitHub Actions OIDC token is not a well-formed JWT: expected three \
@@ -170,7 +186,7 @@ impl ActionsTokenRequest {
 
         let mut authorization = HeaderValue::from_str(&format!("bearer {}", request_token.trim()))
             .map_err(|_| ActionsTokenError::InvalidRequestToken)?;
-        // Keeps the value out of hyper's debug output and header compression.
+        // Keeps the value out of the HTTP client's debug output.
         authorization.set_sensitive(true);
 
         Ok(Self { url, authorization })
@@ -187,23 +203,7 @@ impl ActionsTokenRequest {
     ) -> Result<ActionsToken, ActionsTokenError> {
         let host = self.url.host_str().unwrap_or_default().to_string();
 
-        let response = tokio::time::timeout(limit, http_get::get(&self.url, &self.authorization))
-            .await
-            .map_err(|_| ActionsTokenError::TimedOut {
-                host: host.clone(),
-                after: limit,
-            })?
-            .map_err(|source| ActionsTokenError::Request {
-                host: host.clone(),
-                source,
-            })?;
-
-        if !response.status.is_success() {
-            return Err(ActionsTokenError::Rejected {
-                host,
-                status: response.status.as_u16(),
-            });
-        }
+        let body = self.get(&host, limit).await?;
 
         #[derive(Deserialize)]
         struct TokenResponse {
@@ -212,12 +212,90 @@ impl ActionsTokenRequest {
         // The serde error is dropped on purpose: it can quote the offending
         // value, and the value is the secret.
         let TokenResponse { value } =
-            serde_json::from_slice(&response.body).map_err(|_| ActionsTokenError::BadResponse {
+            serde_json::from_slice(&body).map_err(|_| ActionsTokenError::BadResponse {
                 host,
                 reason: "invalid JSON or missing \"value\"",
             })?;
 
         ActionsToken::parse(&value)
+    }
+
+    /// One GET, returning the body of a success response.
+    ///
+    /// The client is built per call and nothing is pooled: the request is made
+    /// once per process. Redirects are refused so the bearer header cannot be
+    /// replayed to another host, and `timeout` covers connecting, TLS and
+    /// reading the whole body.
+    async fn get(&self, host: &str, limit: Duration) -> Result<Vec<u8>, ActionsTokenError> {
+        install_crypto_provider();
+        let client = reqwest::Client::builder()
+            .redirect(redirect::Policy::none())
+            .timeout(limit)
+            .user_agent(concat!("rafn/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|source| ActionsTokenError::Client {
+                source: source.without_url(),
+            })?;
+        let failed = |error: reqwest::Error| request_failed(error, host, limit);
+
+        let mut response = client
+            .get(self.url.clone())
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(failed)?;
+
+        // Checked before the body is read: an error page is not worth
+        // downloading, and its text is never shown.
+        if !response.status().is_success() {
+            return Err(ActionsTokenError::Rejected {
+                host: host.to_string(),
+                status: response.status().as_u16(),
+            });
+        }
+
+        let too_large = || ActionsTokenError::BodyTooLarge {
+            host: host.to_string(),
+        };
+        if response
+            .content_length()
+            .is_some_and(|declared| declared > MAX_BODY_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(failed)? {
+            if body.len() + chunk.len() > MAX_BODY_BYTES {
+                return Err(too_large());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    }
+}
+
+/// reqwest has no built-in crypto provider here: `rustls-no-provider` keeps
+/// aws-lc-rs (and the C toolchain it needs on some targets) out of the build,
+/// so one must be installed process-wide before a client is built. This is
+/// the same ring provider the gRPC channel is configured with.
+fn install_crypto_provider() {
+    // `Err` only means a provider is already installed, by an earlier call or
+    // by another crate; that one serves just as well.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+fn request_failed(error: reqwest::Error, host: &str, limit: Duration) -> ActionsTokenError {
+    if error.is_timeout() {
+        ActionsTokenError::TimedOut {
+            host: host.to_string(),
+            after: limit,
+        }
+    } else {
+        ActionsTokenError::Request {
+            host: host.to_string(),
+            source: error.without_url(),
+        }
     }
 }
 
@@ -341,5 +419,196 @@ mod tests {
         assert!(url.contains(REQUEST_URL_ENV), "{url}");
         let token = ActionsTokenError::InvalidRequestToken.to_string();
         assert!(token.contains(REQUEST_TOKEN_ENV), "{token}");
+    }
+
+    // The tests below run the real client against a local endpoint
+    // (`fake_endpoint`), pinning the behaviour that distinguishes a credential
+    // fetch from an ordinary GET: it never leaves the host it was pointed at,
+    // reads a bounded amount, and says nothing about what the server returned.
+
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+
+    use anyhow::Context;
+
+    use crate::config::fake_endpoint::{FakeEndpoint, Reply};
+
+    const LONG_TIMEOUT: Duration = Duration::from_secs(10);
+
+    fn request_to(url: &str) -> Result<ActionsTokenRequest> {
+        Ok(ActionsTokenRequest::parse(url, "request-token")?)
+    }
+
+    fn token_json(pad: usize) -> String {
+        format!(r#"{{"value":"{JWT}","pad":"{}"}}"#, "a".repeat(pad))
+    }
+
+    #[tokio::test]
+    async fn sends_one_get_with_the_expected_headers() -> Result<()> {
+        let endpoint = FakeEndpoint::start(Reply::json(token_json(0)))?;
+        let request = request_to(&endpoint.url("/a/b?x=1"))?;
+
+        let token = request.fetch_within(LONG_TIMEOUT).await?;
+
+        assert_eq!(token.expose_secret(), JWT);
+        let seen = endpoint.requests()?;
+        assert_eq!(seen.len(), 1);
+        let head = seen.first().context("no request")?;
+        assert_eq!(head.request_line, "GET /a/b?x=1&audience=rafn HTTP/1.1");
+        assert_eq!(head.header("authorization"), Some("bearer request-token"));
+        assert_eq!(head.header("accept"), Some("application/json"));
+        assert_eq!(
+            head.header("user-agent"),
+            Some(concat!("rafn/", env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(head.header("host"), Some(request.url.authority()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_refusal_never_shows_the_body_the_server_sent() -> Result<()> {
+        let endpoint = FakeEndpoint::start(Reply::status(418, "SECRET-in-an-error-page"))?;
+
+        let error = request_to(&endpoint.url("/"))?
+            .fetch_within(LONG_TIMEOUT)
+            .await
+            .err()
+            .context("418 should be refused")?;
+
+        assert!(
+            matches!(error, ActionsTokenError::Rejected { status: 418, .. }),
+            "{error:?}"
+        );
+        assert!(!format!("{error:#} {error:?}").contains("SECRET"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed() -> Result<()> {
+        let target = FakeEndpoint::start(Reply::json(token_json(0)))?;
+        let endpoint = FakeEndpoint::start(Reply::redirect(&target.url("/stolen")))?;
+
+        let error = request_to(&endpoint.url("/"))?
+            .fetch_within(LONG_TIMEOUT)
+            .await
+            .err()
+            .context("a redirect should be refused")?;
+
+        assert!(
+            matches!(error, ActionsTokenError::Rejected { status: 302, .. }),
+            "{error:?}"
+        );
+        assert!(
+            target.requests()?.is_empty(),
+            "the bearer header must not follow a redirect"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_declared_oversized_body_is_refused() -> Result<()> {
+        let endpoint = FakeEndpoint::start(Reply::json(token_json(MAX_BODY_BYTES)))?;
+
+        let error = request_to(&endpoint.url("/"))?
+            .fetch_within(LONG_TIMEOUT)
+            .await
+            .err()
+            .context("a body over the cap should fail")?;
+
+        assert!(
+            matches!(error, ActionsTokenError::BodyTooLarge { .. }),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_oversized_body_is_refused_while_streaming() -> Result<()> {
+        let endpoint = FakeEndpoint::start(Reply::chunked_json(token_json(MAX_BODY_BYTES)))?;
+
+        let error = request_to(&endpoint.url("/"))?
+            .fetch_within(LONG_TIMEOUT)
+            .await
+            .err()
+            .context("a streamed body over the cap should fail")?;
+
+        assert!(
+            matches!(error, ActionsTokenError::BodyTooLarge { .. }),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_body_exactly_at_the_cap_is_accepted() -> Result<()> {
+        let overhead = token_json(0).len();
+        let body = token_json(MAX_BODY_BYTES - overhead);
+        assert_eq!(body.len(), MAX_BODY_BYTES);
+
+        for reply in [Reply::json(body.clone()), Reply::chunked_json(body)] {
+            let endpoint = FakeEndpoint::start(reply)?;
+            let token = request_to(&endpoint.url("/"))?
+                .fetch_within(LONG_TIMEOUT)
+                .await?;
+            assert_eq!(token.expose_secret(), JWT);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_request_url_is_kept_out_of_errors() -> Result<()> {
+        let url = format!("{}jobs/JOB-ID-123/oidctoken", FakeEndpoint::closed_url()?);
+
+        let error = request_to(&url)?
+            .fetch_within(LONG_TIMEOUT)
+            .await
+            .err()
+            .context("nothing is listening")?;
+
+        assert!(
+            matches!(error, ActionsTokenError::Request { .. }),
+            "{error:?}"
+        );
+        let rendered = format!("{error} {error:#} {error:?}");
+        assert!(!rendered.contains("JOB-ID-123"), "{rendered}");
+        assert!(rendered.contains("127.0.0.1"), "{rendered}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn https_opens_with_a_tls_handshake() -> Result<()> {
+        // The listener is a raw socket, not a TLS server: all that matters is
+        // the first bytes the client sends. A TLS record starts with content
+        // type 0x16 (handshake) and legacy version 0x03xx. Without this, a
+        // client that sent plain HTTP to an `https://` URL would pass every
+        // other test here, which only talk to loopback `http://`.
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let request = request_to(&format!("https://{addr}/oidc"))?;
+
+        let capture = std::thread::spawn(move || -> Result<Vec<u8>> {
+            let (mut socket, _) = listener.accept()?;
+            socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let mut head = [0u8; 2];
+            let len = socket.read(&mut head)?;
+            Ok(head[..len].to_vec())
+        });
+
+        let result = request.fetch_within(LONG_TIMEOUT).await;
+
+        // If the client never connected, unblock `accept` so the failure below
+        // is an assertion rather than a hang.
+        let _ = TcpStream::connect(addr);
+        let head = capture
+            .join()
+            .map_err(|_| anyhow::anyhow!("capture thread panicked"))??;
+        assert_eq!(
+            head.get(..2),
+            Some(&[0x16, 0x03][..]),
+            "first bytes: {head:?}"
+        );
+        // The server hung up mid-handshake, so the request itself fails.
+        assert!(result.is_err());
+        Ok(())
     }
 }

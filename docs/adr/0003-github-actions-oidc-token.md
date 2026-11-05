@@ -43,24 +43,40 @@ as the bearer credential when it is issued for the audience `rafn`.
   an OIDC token says the token was rejected and offers `RAFN_API_KEY` as the
   alternative, instead of sending a keyless user to look for a key they never
   set.
-- The request is made with `hyper` and `tokio-rustls` directly
-  (`src/config/http_get.rs`), using the same provider and OS trust store as the
-  gRPC channel. All of those crates are already in the build through tonic, so
-  the lockfile gains no package. tonic's channel cannot make this request: it
-  speaks only HTTP/2, which the token endpoint need not offer. `ureq` or
-  `reqwest` would add a dependency tree and, with their default root stores, a
-  second source of trust roots and the `CDLA-Permissive-2.0` license
-  (`webpki-roots`) to `deny.toml`, to save roughly 150 lines.
+- The request is made with `reqwest` (`src/config/actions_token.rs`) with
+  default features off: HTTP/1.1 only, no compression, cookies or system proxy.
+  TLS is its `rustls-no-provider` backend, so aws-lc-rs stays out of the build
+  as ADR 0001 requires, and the ring provider the gRPC channel uses is
+  installed process-wide just before the client is built. Roots come from the
+  OS trust store through `rustls-platform-verifier`.
+- The client is configured for a credential fetch rather than general use:
+  redirects are refused, the 10 second timeout covers connecting and reading
+  the body, and the body is read in chunks and abandoned past 64 KiB because
+  reqwest has no cap of its own. A non-success status is reported before the
+  body is read, and neither the body nor the request URL (reqwest prints it
+  by default) reaches an error message.
+- tonic's channel could not make this request: it speaks only HTTP/2, which
+  the token endpoint need not offer. A hand-written GET on `hyper` and
+  `tokio-rustls` would add no packages but would put TLS setup and HTTP edge
+  cases in this repository; it was tried and replaced.
 - `rafn push --dry-run` and `[backend] type = "local"` never build a remote
   backend, so they resolve no credential and make no token request.
 
 ## Consequences
 
-- The request goes straight to the host in the URL: no `HTTPS_PROXY` support.
-  The gRPC channel has none either, so a proxied runner already could not reach
-  the service; add both together if that comes up.
-- A host with no CA bundle fails the token request with a message naming
-  `ca-certificates`, as it already would for the API.
+- The lockfile gains `reqwest`, `hyper-rustls`, `rustls-platform-verifier` and
+  a handful of crates behind them, most of them Android or wasm32 only and
+  never compiled for a release target. `deny.toml` allows
+  `CDLA-Permissive-2.0` for one of those (`webpki-root-certs`).
+- The OS trust store is read through two code paths: tonic's
+  `rustls-native-certs` for the API, `rustls-platform-verifier` for the token
+  (the same files on Linux, the platform verifier APIs on macOS and Windows).
+  A CA the OS trusts is trusted by both.
+- No `HTTPS_PROXY` support: reqwest's `system-proxy` feature is off. The gRPC
+  channel has none either, so a proxied runner already could not reach the
+  service; turn both on together if that comes up.
+- A host with no CA bundle fails the token request at certificate verification
+  (unknown issuer); the API connection fails there as well.
 - Pull requests from forks get neither secrets nor `id-token: write`, so they
   still cannot reach the cloud backend; the error says so.
 - The CLI cannot tell a token the backend will accept from one it will not

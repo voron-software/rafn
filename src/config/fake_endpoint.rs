@@ -2,9 +2,9 @@
 //! tests.
 //!
 //! A plain `std::net::TcpListener` on a thread rather than a mock framework:
-//! the client under test is a hand-rolled GET, so what matters is the exact
-//! bytes it sends (request line, headers) and how it copes with awkward
-//! answers (error statuses, redirects, oversized or never-ending replies).
+//! what matters is the exact bytes the client sends (request line, headers)
+//! and how it copes with awkward answers (error statuses, redirects,
+//! oversized or never-ending replies).
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -49,6 +49,16 @@ impl Reply {
         Self::Respond {
             status: 200,
             headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body: body.into(),
+        }
+    }
+
+    /// A 200 with no `Content-Length`, sent in chunks, so a client cannot
+    /// reject it from the headers alone.
+    pub fn chunked_json(body: impl Into<Vec<u8>>) -> Self {
+        Self::Respond {
+            status: 200,
+            headers: vec![("Transfer-Encoding".to_string(), "chunked".to_string())],
             body: body.into(),
         }
     }
@@ -194,15 +204,29 @@ fn write_response(
     headers: &[(String, String)],
     body: &[u8],
 ) -> std::io::Result<()> {
+    let chunked = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding") && value.eq_ignore_ascii_case("chunked")
+    });
+
     let mut head = format!("HTTP/1.1 {status} Test\r\n");
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    ));
+    if !chunked {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes())?;
-    stream.write_all(body)?;
+
+    if chunked {
+        for chunk in body.chunks(8 * 1024) {
+            stream.write_all(format!("{:x}\r\n", chunk.len()).as_bytes())?;
+            stream.write_all(chunk)?;
+            stream.write_all(b"\r\n")?;
+        }
+        stream.write_all(b"0\r\n\r\n")?;
+    } else {
+        stream.write_all(body)?;
+    }
     stream.flush()
 }

@@ -99,6 +99,10 @@ ignore = [
 # ISC is the TLS stack's license (ring, rustls-webpki, untrusted), pulled in
 # by tonic's `tls-ring` feature for https:// endpoints; it is a permissive
 # MIT-equivalent.
+#
+# CDLA-Permissive-2.0 is webpki-root-certs (the Mozilla root list, as data),
+# which reqwest's rustls-platform-verifier depends on for wasm32 targets only;
+# it is in the lockfile but never compiled for a rafn release target.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -106,6 +110,7 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the

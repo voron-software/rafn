@@ -10,7 +10,6 @@ mod credential;
 mod effective;
 #[cfg(test)]
 pub(crate) mod fake_endpoint;
-mod http_get;
 mod loopback;
 mod repo;
 mod repository;
