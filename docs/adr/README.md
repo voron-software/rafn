@@ -8,3 +8,4 @@ that was replaced is part of why the replacement looks the way it does.
 |---|---|---|
 | [0001](0001-rustls-ring-native-roots.md) | TLS via rustls with ring and the OS trust store | Accepted |
 | [0002](0002-api-key-from-env-via-channel-interceptor.md) | API key from the environment, attached by a channel interceptor | Accepted |
+| [0003](0003-github-actions-oidc-token.md) | GitHub Actions OIDC token as a keyless credential | Accepted |

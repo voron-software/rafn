@@ -6,6 +6,7 @@
 //! contract (credentials and version on every RPC) a test, not a convention.
 
 use std::convert::Infallible;
+use std::env::VarError;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
@@ -25,13 +26,17 @@ use tonic_prost::ProstCodec;
 
 use super::channel::ServiceUrlError;
 use super::*;
-use crate::config::BackendType;
+use crate::config::fake_endpoint::{FakeEndpoint, Reply as TokenReply};
+use crate::config::{
+    ActionsTokenError, ApiKey, ApiKeyError, BackendType, CredentialError, CredentialSource,
+};
 use crate::proto::pb::{
     GetBenchmarkTrendResponse, GetCommitBenchmarksResponse, GetRepositoryTrendsResponse,
     PushResultsResponse,
 };
 
 const TEST_KEY: &str = "rk_test_0123456789";
+const TEST_JWT: &str = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvOmFjbWUvd2lkZ2V0cyJ9.c2lnbmF0dXJl";
 
 /// What one RPC looked like when it reached the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,12 +282,33 @@ fn effective(endpoint: &str) -> EffectiveConfig {
     }
 }
 
-fn reader(endpoint: &str) -> Result<RemoteBackend> {
-    RemoteBackend::from_effective_with_key(effective(endpoint), ApiKey::parse(TEST_KEY))
+fn api_key_source() -> Result<CredentialSource, CredentialError> {
+    Ok(CredentialSource::ApiKey(ApiKey::parse(TEST_KEY)?))
 }
 
-fn pusher(endpoint: &str) -> Result<RemoteBackend> {
-    RemoteBackend::for_push_with_key(effective(endpoint), ApiKey::parse(TEST_KEY))
+async fn reader(endpoint: &str) -> Result<RemoteBackend> {
+    RemoteBackend::from_effective_with_source(effective(endpoint), api_key_source()).await
+}
+
+async fn pusher(endpoint: &str) -> Result<RemoteBackend> {
+    RemoteBackend::for_push_with_source(effective(endpoint), api_key_source()).await
+}
+
+/// The environment GitHub Actions gives a job with `id-token: write`, pointed
+/// at `token_url`. The variable names are GitHub's contract, so they are
+/// spelled out here rather than imported.
+fn actions_source(token_url: &str) -> Result<CredentialSource, CredentialError> {
+    let token_url = token_url.to_string();
+    CredentialSource::from_lookup(move |name| match name {
+        "ACTIONS_ID_TOKEN_REQUEST_URL" => Ok(token_url.clone()),
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN" => Ok("request-token".to_string()),
+        "GITHUB_ACTIONS" => Ok("true".to_string()),
+        _ => Err(VarError::NotPresent),
+    })
+}
+
+fn jwt_body() -> String {
+    format!(r#"{{"value":"{TEST_JWT}"}}"#)
 }
 
 fn trend_query(benchmark_name: Option<&str>) -> TrendQuery {
@@ -294,8 +320,8 @@ fn trend_query(benchmark_name: Option<&str>) -> TrendQuery {
 
 /// Run every RPC the CLI can issue against `endpoint`, returning each result.
 async fn call_every_rpc(endpoint: &str) -> Result<Vec<(&'static str, Result<()>)>> {
-    let reader = reader(endpoint)?;
-    let pusher = pusher(endpoint)?;
+    let reader = reader(endpoint).await?;
+    let pusher = pusher(endpoint).await?;
 
     Ok(vec![
         (
@@ -366,7 +392,10 @@ async fn uppercase_scheme_still_connects() -> Result<()> {
     let server = MockServer::start(None)?;
     let endpoint = server.url().replacen("http", "HTTP", 1);
 
-    reader(&endpoint)?.benchmarks_for_commit("abc").await?;
+    reader(&endpoint)
+        .await?
+        .benchmarks_for_commit("abc")
+        .await?;
 
     assert_eq!(server.seen()?.len(), 1);
     Ok(())
@@ -419,7 +448,8 @@ async fn permission_denied_surfaces_the_servers_entitlement_message_on_every_rpc
 async fn other_failures_name_the_rpc_and_keep_the_status_in_the_chain() -> Result<()> {
     let server = MockServer::start(Some(Status::internal("ClickHouse is down")))?;
 
-    let error = reader(&server.url())?
+    let error = reader(&server.url())
+        .await?
         .compare_commits("a", "b", 5.0)
         .await
         .err()
@@ -444,31 +474,205 @@ async fn other_failures_name_the_rpc_and_keep_the_status_in_the_chain() -> Resul
 }
 
 #[tokio::test]
-async fn missing_key_fails_before_connecting() -> Result<()> {
+async fn missing_credentials_fail_before_connecting() -> Result<()> {
     // A listener that stays open: any connection attempt would complete the
     // TCP handshake in the backlog and make `accept` return immediately.
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
 
-    for expected in [
-        ApiKeyError::Missing,
-        ApiKeyError::Empty,
-        ApiKeyError::Malformed,
-    ] {
-        let error = RemoteBackend::from_effective_with_key(effective(&endpoint), Err(expected))
+    let failures: [fn() -> CredentialError; 4] = [
+        || ApiKeyError::Missing.into(),
+        || ApiKeyError::Empty.into(),
+        || ApiKeyError::Malformed.into(),
+        || CredentialError::IdTokenUnavailable,
+    ];
+    for failure in failures {
+        let expected = failure().to_string();
+
+        let error = RemoteBackend::from_effective_with_source(effective(&endpoint), Err(failure()))
+            .await
             .err()
-            .context("read backend should not build without a key")?;
-        assert_eq!(error.downcast_ref::<ApiKeyError>(), Some(&expected));
+            .context("read backend should not build without a credential")?;
+        assert!(
+            error.downcast_ref::<CredentialError>().is_some(),
+            "{error:#}"
+        );
+        assert_eq!(error.to_string(), expected);
         assert!(error.to_string().contains("RAFN_API_KEY"), "{error:#}");
 
-        let error = RemoteBackend::for_push_with_key(effective(&endpoint), Err(expected))
+        let error = RemoteBackend::for_push_with_source(effective(&endpoint), Err(failure()))
+            .await
             .err()
-            .context("push backend should not build without a key")?;
-        assert_eq!(error.downcast_ref::<ApiKeyError>(), Some(&expected));
+            .context("push backend should not build without a credential")?;
+        assert_eq!(error.to_string(), expected);
     }
 
     let connected = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
     assert!(connected.is_err(), "something connected to the server");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_actions_token_is_fetched_once_and_carried_on_every_rpc() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::json(jwt_body()))?;
+    let server = MockServer::start(None)?;
+    let reader = RemoteBackend::from_effective_with_source(
+        effective(&server.url()),
+        actions_source(&tokens.url("/oidc?api-version=2.0")),
+    )
+    .await?;
+
+    reader.benchmarks_for_commit("abc").await?;
+    reader.trend(trend_query(Some("foo"))).await?;
+    reader.trend(trend_query(None)).await?;
+    reader.compare_commits("a", "b", 5.0).await?;
+    reader.connect_push().await?.submit(vec![]).await?;
+
+    // The CLI is short-lived and the token lasts minutes, so one request
+    // serves every RPC, however many it makes.
+    assert_eq!(tokens.requests()?.len(), 1);
+    let seen = server.seen()?;
+    assert_eq!(seen.len(), 5);
+    for call in &seen {
+        assert_eq!(
+            call.authorization.as_deref(),
+            Some(format!("Bearer {TEST_JWT}").as_str()),
+            "{}",
+            call.rpc
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_api_key_in_the_environment_beats_the_actions_token() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::json(jwt_body()))?;
+    let server = MockServer::start(None)?;
+    let token_url = tokens.url("/oidc");
+    let source = CredentialSource::from_lookup(|name| match name {
+        "RAFN_API_KEY" => Ok(TEST_KEY.to_string()),
+        "ACTIONS_ID_TOKEN_REQUEST_URL" => Ok(token_url.clone()),
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN" => Ok("request-token".to_string()),
+        _ => Err(VarError::NotPresent),
+    });
+
+    RemoteBackend::from_effective_with_source(effective(&server.url()), source)
+        .await?
+        .benchmarks_for_commit("abc")
+        .await?;
+
+    assert!(tokens.requests()?.is_empty());
+    let seen = server.seen()?;
+    assert_eq!(
+        seen.first().and_then(|call| call.authorization.as_deref()),
+        Some(format!("Bearer {TEST_KEY}").as_str())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_failed_token_request_stops_the_backend_before_it_connects() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::status(403, "no"))?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+
+    let error = RemoteBackend::from_effective_with_source(
+        effective(&endpoint),
+        actions_source(&tokens.url("/oidc")),
+    )
+    .await
+    .err()
+    .context("a refused token request should fail the build")?;
+
+    assert!(
+        matches!(
+            error.downcast_ref::<CredentialError>(),
+            Some(CredentialError::ActionsToken(ActionsTokenError::Rejected {
+                status: 403,
+                ..
+            }))
+        ),
+        "{error:#}"
+    );
+    let connected = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+    assert!(connected.is_err(), "the service was contacted anyway");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_bad_api_url_is_reported_before_any_token_request() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::json(jwt_body()))?;
+
+    let error = RemoteBackend::for_push_with_source(
+        effective("grpc://host:50051"),
+        actions_source(&tokens.url("/oidc")),
+    )
+    .await
+    .err()
+    .context("an unsupported scheme should be rejected")?;
+
+    assert!(
+        error.downcast_ref::<ServiceUrlError>().is_some(),
+        "{error:#}"
+    );
+    assert!(tokens.requests()?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_rejected_actions_token_is_not_blamed_on_the_api_key() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::json(jwt_body()))?;
+    let server = MockServer::start(Some(Status::unauthenticated("unknown repository")))?;
+    let backend = RemoteBackend::from_effective_with_source(
+        effective(&server.url()),
+        actions_source(&tokens.url("/oidc")),
+    )
+    .await?;
+
+    let mut errors = vec![
+        backend
+            .benchmarks_for_commit("abc")
+            .await
+            .err()
+            .context("read RPC should fail")?,
+    ];
+    errors.push(
+        backend
+            .connect_push()
+            .await?
+            .submit(vec![])
+            .await
+            .err()
+            .context("push RPC should fail")?,
+    );
+
+    for error in errors {
+        assert!(
+            matches!(rpc_error(&error)?, RpcError::Unauthenticated { .. }),
+            "{error:#}"
+        );
+        let message = format!("{error:#}");
+        assert!(message.contains("GitHub Actions OIDC token"), "{message}");
+        assert!(message.contains("unknown repository"), "{message}");
+        assert!(!message.contains("rejected the API key"), "{message}");
+        assert!(!message.contains(TEST_JWT), "{message}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn debug_output_never_contains_the_actions_token() -> Result<()> {
+    let tokens = FakeEndpoint::start(TokenReply::json(jwt_body()))?;
+    let backend = RemoteBackend::from_effective_with_source(
+        effective("http://127.0.0.1:1"),
+        actions_source(&tokens.url("/oidc")),
+    )
+    .await?;
+
+    for rendered in [format!("{backend:?}"), format!("{backend:#?}")] {
+        assert!(!rendered.contains("eyJ"), "leaked: {rendered}");
+        assert!(!rendered.contains("c2lnbmF0dXJl"), "leaked: {rendered}");
+    }
     Ok(())
 }
 
@@ -478,10 +682,11 @@ fn the_missing_key_message_is_actionable_for_the_user() {
     assert!(message.contains("export RAFN_API_KEY"), "{message}");
 }
 
-#[test]
-fn unsupported_schemes_are_rejected_when_the_backend_is_built() -> Result<()> {
+#[tokio::test]
+async fn unsupported_schemes_are_rejected_when_the_backend_is_built() -> Result<()> {
     for endpoint in ["grpc://host:50051", "ftp://host", "localhost:50051"] {
         let error = reader(endpoint)
+            .await
             .err()
             .with_context(|| format!("{endpoint} should be rejected"))?;
         assert!(
@@ -558,10 +763,9 @@ async fn https_opens_with_a_tls_handshake() -> Result<()> {
 
     // Dropping the accepted socket after the first read ends the client's
     // handshake, so this resolves to an error rather than hanging.
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        reader(&endpoint)?.benchmarks_for_commit("abc"),
-    )
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        reader(&endpoint).await?.benchmarks_for_commit("abc").await
+    })
     .await
     .context("client hung after the server closed the connection")?;
     let client_error = result
@@ -591,10 +795,9 @@ async fn https_never_falls_back_to_plaintext() -> Result<()> {
     let server = MockServer::start(None)?;
     let endpoint = server.url().replacen("http", "https", 1);
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        reader(&endpoint)?.benchmarks_for_commit("abc"),
-    )
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        reader(&endpoint).await?.benchmarks_for_commit("abc").await
+    })
     .await
     .context("TLS connection to a plaintext server hung")?;
 
@@ -616,7 +819,7 @@ async fn connection_errors_and_debug_output_never_contain_the_key() -> Result<()
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         format!("http://{}", listener.local_addr()?)
     };
-    let backend = reader(&closed)?;
+    let backend = reader(&closed).await?;
 
     let error = backend
         .benchmarks_for_commit("abc")

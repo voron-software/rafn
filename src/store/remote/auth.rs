@@ -7,13 +7,13 @@ use tonic::service::Interceptor;
 use tonic::{Code, Request, Status};
 
 use super::channel::ServiceUrl;
-use crate::config::{ApiKey, ApiKeyError};
+use crate::config::{Credential, CredentialError, CredentialKind};
 
 /// Header carrying the CLI's own version, so the server can tell old CLIs
 /// apart when the wire contract evolves.
 const CLIENT_VERSION_HEADER: &str = "x-rafn-client-version";
 
-/// Stamps every outgoing RPC with the credentials and client version.
+/// Stamps every outgoing RPC with the credential and client version.
 ///
 /// Installed as the channel's interceptor, so no individual RPC can forget it.
 #[derive(Clone, Debug)]
@@ -23,12 +23,14 @@ pub struct AuthInterceptor {
 }
 
 impl AuthInterceptor {
-    /// Fails only if tonic rejects a key that [`ApiKey::parse`] accepted,
-    /// which would mean the two validators disagree; reported rather than
-    /// unwrapped so that disagreement is a clear error instead of a panic.
-    pub fn new(key: &ApiKey) -> Result<Self, ApiKeyError> {
-        let mut bearer = MetadataValue::try_from(format!("Bearer {}", key.expose_secret()))
-            .map_err(|_| ApiKeyError::Malformed)?;
+    /// Either kind of credential is sent the same way, as a bearer token.
+    ///
+    /// Fails only if tonic rejects a value that the credential's own parser
+    /// accepted, which would mean the two validators disagree; reported rather
+    /// than unwrapped so that disagreement is a clear error instead of a panic.
+    pub fn new(credential: &Credential) -> Result<Self, CredentialError> {
+        let mut bearer = MetadataValue::try_from(format!("Bearer {}", credential.expose_secret()))
+            .map_err(|_| CredentialError::NotAHeaderValue)?;
         // Keeps HTTP/2 from indexing the value in its header-compression
         // table and makes tonic's own Debug output print it as "Sensitive".
         bearer.set_sensitive(true);
@@ -47,7 +49,7 @@ impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let metadata = request.metadata_mut();
         // `insert` rather than `append`: a caller-supplied header must never
-        // ride along with, or shadow, the configured key.
+        // ride along with, or shadow, the configured credential.
         metadata.insert("authorization", self.bearer.clone());
         metadata.insert(CLIENT_VERSION_HEADER, self.client_version.clone());
         Ok(request)
@@ -58,7 +60,7 @@ impl Interceptor for AuthInterceptor {
 /// code of a response that carried no `grpc-status` (tonic `infer_grpc_status`).
 /// A real rafn answer always has one, so this marks a refusal by something in
 /// front of rafn (a proxy, a WAF, an IAM-gated Cloud Run front end) that never
-/// looked at the key. `bare_http_refusals_are_not_blamed_on_the_key_or_the_subscription`
+/// looked at the credential. `bare_http_refusals_are_not_blamed_on_the_key_or_the_subscription`
 /// fails if a tonic upgrade rewords it.
 const TONIC_INFERRED_STATUS_PREFIX: &str = "grpc-status header missing";
 
@@ -66,24 +68,32 @@ const TONIC_INFERRED_STATUS_PREFIX: &str = "grpc-status header missing";
 /// the user can fix them and a generic "call failed" would hide that.
 #[derive(Debug, Error)]
 pub enum RpcError {
-    /// `UNAUTHENTICATED`: the key was sent but not accepted.
+    /// `UNAUTHENTICATED`: the credential was sent but not accepted.
     #[error(
-        "the rafn API at {endpoint} rejected the API key in RAFN_API_KEY \
-         (server said: \"{message}\"). Check that the key is correct, has \
-         not been revoked, and was issued for this endpoint."
+        "the rafn API at {endpoint} rejected {} (server said: \"{message}\"). {}",
+        .credential.rejected_description(),
+        .credential.rejection_advice()
     )]
-    Unauthenticated { endpoint: String, message: String },
+    Unauthenticated {
+        endpoint: String,
+        message: String,
+        credential: CredentialKind,
+    },
 
-    /// `PERMISSION_DENIED`: the key is valid but the organization behind it
-    /// is not entitled to the operation (inactive subscription, exhausted
-    /// quota, ...). The reason is the server's, since only it knows.
+    /// `PERMISSION_DENIED`: the credential is valid but the organization
+    /// behind it is not entitled to the operation (inactive subscription,
+    /// exhausted quota, ...). The reason is the server's, since only it knows.
     #[error(
-        "the rafn API at {endpoint} refused this request: {message}. Your API \
-         key was accepted, but its organization is not entitled to this \
-         operation (for example because its subscription is inactive or its \
-         quota is used up)."
+        "the rafn API at {endpoint} refused this request: {message}. {} was \
+         accepted, but its organization is not entitled to this operation (for \
+         example because its subscription is inactive or its quota is used up).",
+        .credential.accepted_subject()
     )]
-    PermissionDenied { endpoint: String, message: String },
+    PermissionDenied {
+        endpoint: String,
+        message: String,
+        credential: CredentialKind,
+    },
 
     /// Anything else. The status stays reachable as the error source: it is
     /// shown by `{:#}` (which is how the CLI prints errors) but not by the
@@ -99,7 +109,12 @@ pub enum RpcError {
 }
 
 impl RpcError {
-    pub fn from_status(status: Status, rpc: &'static str, endpoint: &ServiceUrl) -> Self {
+    pub fn from_status(
+        status: Status,
+        rpc: &'static str,
+        endpoint: &ServiceUrl,
+        credential: CredentialKind,
+    ) -> Self {
         let endpoint = endpoint.to_string();
         let message = match status.message() {
             "" => "no reason given".to_string(),
@@ -107,14 +122,22 @@ impl RpcError {
         };
 
         // Only a status the rafn backend itself sent says anything about the
-        // key or the organization. An inferred one stays `Failed`, whose chain
-        // shows the HTTP code, rather than send the user to rotate a key or
-        // check billing over a refusal that never reached rafn.
+        // credential or the organization. An inferred one stays `Failed`, whose
+        // chain shows the HTTP code, rather than send the user to rotate a key
+        // or check billing over a refusal that never reached rafn.
         let from_service = !status.message().starts_with(TONIC_INFERRED_STATUS_PREFIX);
 
         match status.code() {
-            Code::Unauthenticated if from_service => Self::Unauthenticated { endpoint, message },
-            Code::PermissionDenied if from_service => Self::PermissionDenied { endpoint, message },
+            Code::Unauthenticated if from_service => Self::Unauthenticated {
+                endpoint,
+                message,
+                credential,
+            },
+            Code::PermissionDenied if from_service => Self::PermissionDenied {
+                endpoint,
+                message,
+                credential,
+            },
             _ => Self::Failed {
                 rpc,
                 endpoint,
@@ -129,13 +152,24 @@ mod tests {
     use anyhow::{Context, Result};
 
     use super::*;
+    use crate::config::{ActionsToken, ApiKey};
+
+    const JWT: &str = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvOmFjbWUvd2lkZ2V0cyJ9.c2lnbmF0dXJl";
 
     fn text(value: &MetadataValue<Ascii>) -> Result<&str> {
         value.to_str().context("metadata value is not ASCII")
     }
 
     fn interceptor(key: &str) -> Result<AuthInterceptor> {
-        Ok(AuthInterceptor::new(&ApiKey::parse(key)?)?)
+        Ok(AuthInterceptor::new(&Credential::ApiKey(ApiKey::parse(
+            key,
+        )?))?)
+    }
+
+    fn oidc_interceptor(jwt: &str) -> Result<AuthInterceptor> {
+        Ok(AuthInterceptor::new(&Credential::ActionsToken(
+            ActionsToken::parse(jwt)?,
+        ))?)
     }
 
     fn url() -> Result<ServiceUrl> {
@@ -159,6 +193,43 @@ mod tests {
             )?,
             env!("CARGO_PKG_VERSION")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_actions_token_is_sent_as_the_bearer_too() -> Result<()> {
+        let request = oidc_interceptor(JWT)?.call(Request::new(()))?;
+        let metadata = request.metadata();
+
+        let header = metadata.get("authorization").context("no authorization")?;
+        assert_eq!(text(header)?, format!("Bearer {JWT}"));
+        assert!(header.is_sensitive());
+        assert_eq!(
+            text(
+                metadata
+                    .get(CLIENT_VERSION_HEADER)
+                    .context("no client version")?
+            )?,
+            env!("CARGO_PKG_VERSION")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_actions_token_overrides_caller_supplied_authorization() -> Result<()> {
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert("authorization", MetadataValue::from_static("Bearer other"));
+        let request = oidc_interceptor(JWT)?.call(request)?;
+
+        let values = request
+            .metadata()
+            .get_all("authorization")
+            .iter()
+            .map(text)
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(values, [format!("Bearer {JWT}")]);
         Ok(())
     }
 
@@ -209,9 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn debug_never_contains_the_actions_token() -> Result<()> {
+        let interceptor = oidc_interceptor(JWT)?;
+        for rendered in [format!("{interceptor:?}"), format!("{interceptor:#?}")] {
+            assert!(!rendered.contains("eyJ"), "leaked: {rendered}");
+            assert!(!rendered.contains("c2lnbmF0dXJl"), "leaked: {rendered}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn unauthenticated_becomes_an_actionable_error() -> Result<()> {
-        let error =
-            RpcError::from_status(Status::unauthenticated("bad key"), "push_results", &url()?);
+        let error = RpcError::from_status(
+            Status::unauthenticated("bad key"),
+            "push_results",
+            &url()?,
+            CredentialKind::ApiKey,
+        );
 
         assert!(
             matches!(error, RpcError::Unauthenticated { .. }),
@@ -225,11 +310,53 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_actions_token_does_not_blame_the_api_key() -> Result<()> {
+        let error = RpcError::from_status(
+            Status::unauthenticated("unknown repository"),
+            "push_results",
+            &url()?,
+            CredentialKind::ActionsOidc,
+        );
+
+        assert!(
+            matches!(error, RpcError::Unauthenticated { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("GitHub Actions OIDC token"), "{message}");
+        assert!(message.contains("unknown repository"), "{message}");
+        assert!(message.contains("https://api.rafn.dev"), "{message}");
+        // The user may never have had a key; do not send them looking for one
+        // except as the alternative.
+        assert!(!message.contains("rejected the API key"), "{message}");
+        assert!(!message.contains("revoked"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_denied_actions_token_is_called_a_token_not_a_key() -> Result<()> {
+        let error = RpcError::from_status(
+            Status::permission_denied("subscription inactive"),
+            "push_results",
+            &url()?,
+            CredentialKind::ActionsOidc,
+        );
+
+        let message = error.to_string();
+        assert!(message.contains("subscription inactive"), "{message}");
+        assert!(message.contains("not entitled"), "{message}");
+        assert!(message.contains("OIDC token was accepted"), "{message}");
+        assert!(!message.contains("API key"), "{message}");
+        Ok(())
+    }
+
+    #[test]
     fn permission_denied_carries_the_servers_reason() -> Result<()> {
         let error = RpcError::from_status(
             Status::permission_denied("subscription inactive"),
             "push_results",
             &url()?,
+            CredentialKind::ApiKey,
         );
 
         assert!(
@@ -246,15 +373,20 @@ mod tests {
 
     #[test]
     fn statuses_tonic_inferred_from_http_codes_stay_generic() -> Result<()> {
-        for code in [Code::Unauthenticated, Code::PermissionDenied] {
+        for (code, kind) in [Code::Unauthenticated, Code::PermissionDenied]
+            .into_iter()
+            .flat_map(|code| {
+                [CredentialKind::ApiKey, CredentialKind::ActionsOidc].map(|kind| (code, kind))
+            })
+        {
             let status = Status::new(
                 code,
                 "grpc-status header missing, mapped from HTTP status code 403",
             );
-            let error = RpcError::from_status(status, "push_results", &url()?);
+            let error = RpcError::from_status(status, "push_results", &url()?, kind);
             assert!(
                 matches!(error, RpcError::Failed { .. }),
-                "{code:?}: {error:?}"
+                "{code:?} {kind:?}: {error:?}"
             );
         }
         Ok(())
@@ -262,7 +394,12 @@ mod tests {
 
     #[test]
     fn empty_server_messages_still_read_as_sentences() -> Result<()> {
-        let error = RpcError::from_status(Status::permission_denied(""), "push_results", &url()?);
+        let error = RpcError::from_status(
+            Status::permission_denied(""),
+            "push_results",
+            &url()?,
+            CredentialKind::ApiKey,
+        );
         assert!(error.to_string().contains("no reason given"), "{error}");
         Ok(())
     }
@@ -275,7 +412,8 @@ mod tests {
             Status::resource_exhausted("slow down"),
             Status::not_found("nope"),
         ] {
-            let error = RpcError::from_status(status, "push_results", &url()?);
+            let error =
+                RpcError::from_status(status, "push_results", &url()?, CredentialKind::ApiKey);
             assert!(matches!(error, RpcError::Failed { .. }), "{error:?}");
         }
         Ok(())
@@ -284,7 +422,12 @@ mod tests {
     #[test]
     fn failed_hides_status_detail_by_default_and_shows_it_in_the_chain() -> Result<()> {
         let status = Status::internal("ClickHouse: table default.benchmarks does not exist");
-        let error = anyhow::Error::new(RpcError::from_status(status, "push_results", &url()?));
+        let error = anyhow::Error::new(RpcError::from_status(
+            status,
+            "push_results",
+            &url()?,
+            CredentialKind::ApiKey,
+        ));
 
         let short = format!("{error}");
         assert_eq!(

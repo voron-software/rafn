@@ -99,16 +99,16 @@ impl Backend for SelectedBackend {
 
 /// Select and build the configured backend by loading `rafn.toml` and the
 /// user config and resolving the [`EffectiveConfig`].
-pub fn selected_backend() -> Result<SelectedBackend> {
+pub async fn selected_backend() -> Result<SelectedBackend> {
     let repo_config = RepoConfig::load()?;
     let user_config = Config::load()?;
     let effective = EffectiveConfig::resolve(&repo_config, &user_config);
 
     match effective.backend_type {
         BackendType::Local => Ok(SelectedBackend::Local(local_backend(&repo_config))),
-        BackendType::Cloud => Ok(SelectedBackend::Remote(RemoteBackend::from_effective(
-            effective,
-        )?)),
+        BackendType::Cloud => Ok(SelectedBackend::Remote(
+            RemoteBackend::from_effective(effective).await?,
+        )),
     }
 }
 
@@ -122,12 +122,13 @@ pub fn local_backend(repo_config: &RepoConfig) -> LocalBackend {
         .map_or_else(LocalBackend::default, LocalBackend::with_root)
 }
 
-/// Remote backend for `rafn push`. Fails before any connection when
-/// `RAFN_API_KEY` is missing or the API URL is unusable.
-pub fn remote_backend_for_push(repo_config: RepoConfig) -> Result<RemoteBackend> {
+/// Remote backend for `rafn push`. Fails before any connection to the service
+/// when no credential is available (`RAFN_API_KEY`, or in GitHub Actions the
+/// job's OIDC token) or the API URL is unusable.
+pub async fn remote_backend_for_push(repo_config: RepoConfig) -> Result<RemoteBackend> {
     let user_config = Config::load().unwrap_or_default();
     let effective = EffectiveConfig::resolve(&repo_config, &user_config);
-    RemoteBackend::for_push(effective)
+    RemoteBackend::for_push(effective).await
 }
 
 pub fn format_duration_trend(ns: &f64) -> String {

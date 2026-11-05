@@ -82,6 +82,20 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL parsing (git remote URLs)
 url = "2"
 
+# Plain HTTPS GET for the GitHub Actions OIDC token (src/config/http_get.rs).
+#
+# Every crate here is already in the dependency graph through tonic's TLS
+# support, with the same TLS stack as the gRPC channel (rustls with ring, OS
+# trust store; see docs/adr/0001-rustls-ring-native-roots.md), so using them
+# directly adds no crate to the build. tonic cannot make this request itself:
+# its channel speaks only HTTP/2, which the token endpoint need not offer.
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8"
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
