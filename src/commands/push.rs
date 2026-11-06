@@ -37,13 +37,14 @@ impl PushCommand {
         }
 
         let local_store = store::local_backend(&repo_config);
-        // Built up front so a missing API key or bad API URL fails before any
-        // work is done, but skipped on --dry-run, which never contacts the
-        // service and so should not demand credentials.
+        // Built up front so a missing credential or bad API URL fails before
+        // any work is done, but skipped on --dry-run, which never contacts the
+        // service and so should not demand credentials (or fetch a GitHub
+        // Actions OIDC token).
         let remote = if self.dry_run {
             None
         } else {
-            Some(store::remote_backend_for_push(repo_config)?)
+            Some(store::remote_backend_for_push(repo_config).await?)
         };
 
         // Collect the commits to push.

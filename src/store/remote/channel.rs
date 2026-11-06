@@ -7,13 +7,13 @@ use anyhow::{Context, Result};
 use thiserror::Error;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
-use url::{Host, Url};
+use url::Url;
 
 use super::auth::AuthInterceptor;
-use crate::config::ApiKey;
+use crate::config::{Credential, is_loopback};
 use crate::proto::pb::benchmark_service_client::BenchmarkServiceClient;
 
-/// A benchmark-service client whose every call carries the API key.
+/// A benchmark-service client whose every call carries the credential.
 pub type Client = BenchmarkServiceClient<InterceptedService<Channel, AuthInterceptor>>;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub enum ServiceUrlError {
     UnsupportedScheme { scheme: String, url: String },
 
     #[error(
-        "refusing to send the API key over unencrypted http:// to \"{host}\" \
+        "refusing to send credentials over unencrypted http:// to \"{host}\" \
          (API URL \"{url}\"): use https://. Plain http:// is accepted only for \
          loopback hosts (localhost, 127.0.0.1, [::1]) used for local development."
     )]
@@ -54,7 +54,7 @@ pub enum Transport {
 /// built from it without re-validating anything. Any scheme other than `http`
 /// or `https` is rejected up front rather than silently downgraded to
 /// plaintext, and `http` is accepted only for loopback hosts because the
-/// bearer API key rides on every request: HTTP/2 header compression is an
+/// bearer credential rides on every request: HTTP/2 header compression is an
 /// encoding, not encryption, so anyone on the path could read it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceUrl {
@@ -114,30 +114,18 @@ impl ServiceUrl {
     }
 }
 
-/// Whether traffic to `host` stays on this machine. Judged on the parsed host
-/// rather than the raw string, so `localhost.evil.example` and
-/// `http://localhost@evil.example` (whose host is `evil.example`) do not pass.
-fn is_loopback(host: &Host<&str>) -> bool {
-    match host {
-        // `url` lowercases domains, so this also matches `LOCALHOST`.
-        Host::Domain(name) => *name == "localhost",
-        Host::Ipv4(ip) => ip.is_loopback(),
-        Host::Ipv6(ip) => ip.is_loopback(),
-    }
-}
-
 impl fmt::Display for ServiceUrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.raw)
     }
 }
 
-/// Connect to `url` and return a client that sends `key` on every call.
+/// Connect to `url` and return a client that sends `credential` on every call.
 ///
-/// Credentials are required by the signature, so a missing key is caught by
-/// whoever resolves it, before any socket is opened.
-pub async fn connect(url: &ServiceUrl, key: &ApiKey) -> Result<Client> {
-    let interceptor = AuthInterceptor::new(key)?;
+/// A resolved credential is required by the signature, so a missing one is
+/// caught by whoever resolves it, before any socket is opened.
+pub async fn connect(url: &ServiceUrl, credential: &Credential) -> Result<Client> {
+    let interceptor = AuthInterceptor::new(credential)?;
 
     let mut endpoint = Endpoint::from_shared(url.normalized.clone())
         .with_context(|| format!("Invalid API URL {url}"))?;

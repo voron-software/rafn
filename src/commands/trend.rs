@@ -39,7 +39,7 @@ impl TrendCommand {
     // directly, unlike `tracing`'s log lines.
     #[allow(clippy::print_stdout)]
     pub async fn execute(self) -> Result<()> {
-        let backend = store::selected_backend()?;
+        let backend = store::selected_backend().await?;
 
         if backend.is_remote() {
             if let Some(ref name) = self.name {

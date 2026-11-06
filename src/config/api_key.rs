@@ -8,7 +8,8 @@
 //!
 //! Only the cloud backend needs a key. `[backend] type = "local"` never reads
 //! it, and `rafn push --dry-run` does not either because it never contacts
-//! the service.
+//! the service. Inside GitHub Actions a key is optional: without one the
+//! job's OIDC token is used instead (see [`CredentialSource`](super::CredentialSource)).
 
 use std::env::VarError;
 use std::fmt;
@@ -24,10 +25,11 @@ pub const API_KEY_ENV: &str = "RAFN_API_KEY";
 pub enum ApiKeyError {
     #[error(
         "RAFN_API_KEY is not set. The cloud backend needs an API key: \
-         export RAFN_API_KEY=<your key> (in GitHub Actions, pass a secret via the \
-         `api-key` input; secrets are not available to pull requests from \
-         forks). To use rafn without the cloud, set `type = \"local\"` \
-         under [backend] in rafn.toml."
+         export RAFN_API_KEY=<your key> (in GitHub Actions, add \
+         `permissions: id-token: write` to the job and no key is needed; or pass \
+         a secret via the `api-key` input, though secrets are not available to \
+         pull requests from forks). To use rafn without the cloud, set \
+         `type = \"local\"` under [backend] in rafn.toml."
     )]
     Missing,
 

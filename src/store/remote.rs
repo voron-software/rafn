@@ -9,7 +9,9 @@ use anyhow::{Context, Result};
 use tonic::Status;
 
 use crate::comparison;
-use crate::config::{ApiKey, ApiKeyError, EffectiveConfig, RepositoryRef};
+use crate::config::{
+    Credential, CredentialError, CredentialKind, CredentialSource, EffectiveConfig, RepositoryRef,
+};
 use crate::proto::benchmark::timestamp_to_millis;
 use crate::proto::pb::{
     BenchmarkComparison, BenchmarkSet, CompareCommitsRequest, CompareCommitsResponse,
@@ -31,55 +33,60 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct RemoteBackend {
     url: ServiceUrl,
-    key: ApiKey,
+    credential: Credential,
     repository: Option<RepositoryRef>,
 }
 
 impl RemoteBackend {
     /// Build a backend for read operations (trend/compare), which require a
-    /// resolved repository identity and an API key from `RAFN_API_KEY`.
-    pub fn from_effective(effective: EffectiveConfig) -> Result<Self> {
-        Self::from_effective_with_key(effective, ApiKey::from_env())
+    /// resolved repository identity and a credential: `RAFN_API_KEY`, or inside
+    /// GitHub Actions the job's OIDC token (see [`CredentialSource`]).
+    pub async fn from_effective(effective: EffectiveConfig) -> Result<Self> {
+        Self::from_effective_with_source(effective, CredentialSource::from_env()).await
     }
 
     /// Build a backend for `rafn push`, which reads repository identity from
     /// each snapshot's `SourceInformation` rather than from config.
-    pub fn for_push(effective: EffectiveConfig) -> Result<Self> {
-        Self::for_push_with_key(effective, ApiKey::from_env())
+    pub async fn for_push(effective: EffectiveConfig) -> Result<Self> {
+        Self::for_push_with_source(effective, CredentialSource::from_env()).await
     }
 
-    // The `_with_key` variants take the already-resolved key so tests can
-    // cover the missing/invalid cases without mutating the process
-    // environment. Construction is synchronous and never touches the network,
-    // which is what guarantees credential and URL problems surface before any
-    // connection attempt.
-    fn from_effective_with_key(
+    // The `_with_source` variants take the already-chosen credential source so
+    // tests can cover the missing/invalid cases without mutating the process
+    // environment.
+    async fn from_effective_with_source(
         effective: EffectiveConfig,
-        key: Result<ApiKey, ApiKeyError>,
+        source: Result<CredentialSource, CredentialError>,
     ) -> Result<Self> {
         let repository = require_repository(&effective)?;
-        Self::new(&effective.endpoint, key, Some(repository))
+        Self::new(&effective.endpoint, source, Some(repository)).await
     }
 
-    fn for_push_with_key(
+    async fn for_push_with_source(
         effective: EffectiveConfig,
-        key: Result<ApiKey, ApiKeyError>,
+        source: Result<CredentialSource, CredentialError>,
     ) -> Result<Self> {
-        Self::new(&effective.endpoint, key, None)
+        Self::new(&effective.endpoint, source, None).await
     }
 
-    fn new(
+    async fn new(
         endpoint: &str,
-        key: Result<ApiKey, ApiKeyError>,
+        source: Result<CredentialSource, CredentialError>,
         repository: Option<RepositoryRef>,
     ) -> Result<Self> {
-        // Key first: it is the failure a fresh install or a fork PR hits, and
-        // its message says how to fix it.
-        let key = key?;
+        // Everything that can fail without I/O comes first, in the order a
+        // user is likely to hit it: the credential source is the failure a
+        // fresh install or a fork PR meets, and its message says how to fix
+        // it. Only then does `resolve` make the one network request, if the
+        // credential needs it (a GitHub Actions OIDC token). So credential and
+        // URL problems still surface before any connection to the service, and
+        // a bad URL never costs a token request.
+        let source = source?;
         let url = ServiceUrl::parse(endpoint)?;
+        let credential = source.resolve().await?;
         Ok(Self {
             url,
-            key,
+            credential,
             repository,
         })
     }
@@ -96,16 +103,17 @@ impl RemoteBackend {
         Ok(BenchmarkClient {
             inner: self.connect().await?,
             url: self.url.clone(),
+            credential: self.credential.kind(),
         })
     }
 
     async fn connect(&self) -> Result<Client> {
-        channel::connect(&self.url, &self.key).await
+        channel::connect(&self.url, &self.credential).await
     }
 
     /// Adapter for `map_err` on an RPC result, naming the call for the error.
     fn rpc_error(&self, rpc: &'static str) -> impl FnOnce(Status) -> RpcError + '_ {
-        move |status| RpcError::from_status(status, rpc, &self.url)
+        move |status| RpcError::from_status(status, rpc, &self.url, self.credential.kind())
     }
 }
 
@@ -316,6 +324,8 @@ fn summary_from_proto(summary: ComparisonSummary) -> comparison::Summary {
 pub struct BenchmarkClient {
     inner: Client,
     url: ServiceUrl,
+    /// Only to word a refusal; the credential itself lives in the interceptor.
+    credential: CredentialKind,
 }
 
 impl BenchmarkClient {
@@ -324,7 +334,9 @@ impl BenchmarkClient {
             .inner
             .push_results(PushResultsRequest { benchmark_sets })
             .await
-            .map_err(|status| RpcError::from_status(status, "push_results", &self.url))?;
+            .map_err(|status| {
+                RpcError::from_status(status, "push_results", &self.url, self.credential)
+            })?;
 
         Ok(response.into_inner().benchmarks_pushed)
     }

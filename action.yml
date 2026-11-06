@@ -20,9 +20,11 @@ inputs:
     default: ''
   api-key:
     description: >-
-      rafn API key, passed to the command as RAFN_API_KEY. Required by push,
-      trend, and compare when the backend is cloud. Pass it from a repository or
-      organization secret, never as a literal.
+      rafn API key, passed to the command as RAFN_API_KEY. Optional when the
+      job has `permissions: id-token: write`: without a key, push, trend, and
+      compare authenticate with the workflow's OIDC token. Otherwise required by
+      those commands when the backend is cloud. An explicit key always wins.
+      Pass it from a repository or organization secret, never as a literal.
     required: false
     default: ''
 

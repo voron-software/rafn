@@ -16,10 +16,12 @@ is the problem.
   bug reports. Tests pin that the `RAFN_` env scan does not pull it into either
   config type.
 - `ApiKey` is a newtype validated at construction, with a redacting `Debug` and
-  no `Display`. `RemoteBackend` can only be built with one, and building it is
-  synchronous, so a missing key or bad URL fails before any socket is opened.
+  no `Display`. `RemoteBackend` can only be built with a resolved credential,
+  and a missing key or bad URL fails before any connection to the service is
+  opened. (Since [0003](0003-github-actions-oidc-token.md) the credential can
+  also be a GitHub Actions OIDC token, so building the backend is async.)
 - One `AuthInterceptor` is installed on the channel, so no RPC can forget
-  credentials. It sets `authorization: Bearer <key>` (marked sensitive, which
+  credentials. It sets `authorization: Bearer <credential>` (marked sensitive, which
   keeps it out of HTTP/2 header compression and tonic's debug output) and
   `x-rafn-client-version: <CARGO_PKG_VERSION>`, overwriting any caller-supplied
   `authorization`. This is the wire contract the backend has to match.

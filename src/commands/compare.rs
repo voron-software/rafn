@@ -55,7 +55,7 @@ impl CompareCommand {
         let backend = match effective.backend_type {
             BackendType::Local => SelectedBackend::Local(store::local_backend(&repo_config)),
             BackendType::Cloud => {
-                SelectedBackend::Remote(RemoteBackend::from_effective(effective)?)
+                SelectedBackend::Remote(RemoteBackend::from_effective(effective).await?)
             }
         };
 

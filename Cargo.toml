@@ -82,6 +82,19 @@ chrono = { version = "0.4", features = ["serde"] }
 # URL parsing (git remote URLs)
 url = "2"
 
+# Plain HTTPS GET for the GitHub Actions OIDC token (src/config/actions_token.rs).
+#
+# - `rustls-no-provider` keeps reqwest on rustls but without its built-in
+#   aws-lc-rs provider, which ADR 0001 rejected for the cross-compiled release
+#   targets. reqwest then needs a provider installed process-wide; the `rustls`
+#   dependency below, with the `ring` provider tonic already uses, is how
+#   actions_token.rs installs one.
+# - Roots come from the OS trust store through rustls-platform-verifier, as for
+#   the gRPC channel.
+# - No `http2`, `system-proxy`, compression or cookies: one HTTP/1.1 GET.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
