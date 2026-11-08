@@ -17,16 +17,16 @@ A benchmark run in CI shows numbers for one commit, not whether a change made th
 
 ## Quickstart
 
-From the directory of a project that uses one of the supported frameworks:
+From the directory of a project that uses one of the supported frameworks, keep snapshots on disk with the local backend:
 
 ```sh
-rafn init                         # writes rafn.toml for the cloud backend
-rafn bench                        # runs the benchmarks, saves a snapshot, reports regressions
-export RAFN_API_KEY=<your key>
-rafn push                         # uploads the snapshot for the current commit
+printf '[backend]\ntype = "local"\n' > rafn.toml
+rafn bench        # runs the benchmarks and saves a snapshot for the current commit
+# change the code, commit, then
+rafn bench        # compares against the previous commit's snapshot and reports regressions
 ```
 
-In GitHub Actions no key is needed; see [Authentication](https://github.com/voron-software/rafn/blob/main/docs/guides/authentication.md).
+To upload snapshots to the rafn cloud service for trends and commit-to-commit comparison, switch to the cloud backend and provide a credential as described in the [authentication guide](https://github.com/voron-software/rafn/blob/main/docs/guides/authentication.md).
 
 ## Documentation
 
