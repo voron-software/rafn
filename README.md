@@ -30,7 +30,7 @@ In GitHub Actions no key is needed; see [Authentication](https://github.com/voro
 
 ## Documentation
 
-[docs/README.md](https://github.com/voron-software/rafn/blob/main/docs/README.md) indexes the guides and architecture docs.
+Guides for authentication, the GitHub Action, bisecting and the framework examples, and the architecture docs, are in the [documentation index](https://github.com/voron-software/rafn/blob/main/docs/README.md).
 
 ## Contributing and license
 
