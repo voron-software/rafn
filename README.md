@@ -34,4 +34,4 @@ In GitHub Actions no key is needed; see [Authentication](https://github.com/voro
 
 ## Contributing and license
 
-See the [contributing guide](https://github.com/voron-software/.github/blob/main/CONTRIBUTING.md). rafn is licensed under [Apache-2.0](https://github.com/voron-software/rafn/blob/main/LICENSE).
+See the [contributing guide](https://github.com/voron-software/.github/blob/main/.github/CONTRIBUTING.md). rafn is licensed under [Apache-2.0](https://github.com/voron-software/rafn/blob/main/LICENSE).
