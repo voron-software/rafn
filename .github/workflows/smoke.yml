@@ -1,4 +1,4 @@
-name: Smoke test
+name: Smoke Test
 
 on:
   schedule:
@@ -33,7 +33,7 @@ jobs:
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
   homebrew:
-    name: Homebrew
+    name: Install (Homebrew)
     needs: version
     runs-on: macos-latest
     timeout-minutes: 15
@@ -47,7 +47,7 @@ jobs:
           [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
 
   winget:
-    name: winget
+    name: Install (winget)
     needs: version
     runs-on: windows-latest
     timeout-minutes: 15
@@ -69,7 +69,7 @@ jobs:
           }
 
   pip:
-    name: pip
+    name: Install (pip)
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -85,7 +85,7 @@ jobs:
           [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
 
   npm:
-    name: npm
+    name: Install (npm)
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -99,7 +99,7 @@ jobs:
           [ "$actual" = "$expected" ] || { echo "Expected '$expected', got '$actual'"; exit 1; }
 
   cargo-binstall:
-    name: cargo-binstall
+    name: Install (cargo-binstall)
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 15
