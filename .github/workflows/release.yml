@@ -376,8 +376,8 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       # renovate: datasource=github-release-attachments depName=microsoft/winget-create
-      WINGETCREATE_VERSION: v1.12.13.0
-      WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
+      WINGETCREATE_VERSION: v1.28.1.0
+      WINGETCREATE_SHA256: 63d980ba79e97042395bd6eb5992c2db9e01e9e7a8a22958a95c288f27310413
 
     steps:
       - name: Download wingetcreate
