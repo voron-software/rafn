@@ -63,6 +63,11 @@ feature-depth = 1
 # More documentation for the advisories section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 [advisories]
+# Unmaintained crates fail only when a workspace crate depends on them
+# directly: a stale transitive dependency is not ours to replace, and its
+# upstream has to move first. The scope covers only unmaintained advisories;
+# vulnerabilities fail at any depth.
+unmaintained = "workspace"
 # The path where the advisory databases are cloned/fetched into
 #db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
@@ -70,11 +75,9 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    # proc-macro-error2 is a build-time-only proc-macro dependency of
-    # tabled_derive (via tabled), not a runtime dependency. Its author has
-    # confirmed it unmaintained with no safe upgrade available
-    # (RUSTSEC-2026-0173); revisit if tabled drops it or a replacement lands.
-    { id = "RUSTSEC-2026-0173", reason = "build-time-only proc-macro dep with no safe upgrade available; revisit when tabled drops it" },
+    # chrono is unmaintained, not vulnerable, with no patched version. rafn
+    # uses it directly; remove this once it moves to jiff.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono, used directly; no patched version. Remove after moving to jiff." },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
